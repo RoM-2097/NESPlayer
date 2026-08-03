@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nova · NESPLAYER — Retro NES Emulator</title>
+  <meta name="description" content="A modern, in-browser NES emulator. Load your own ROMs and play instantly with keyboard or gamepad." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%95%B9%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Press+Start+2P&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/style.css?v=20240916.02" />
+
+
+</head>
+<body>
+  <!-- Decorative background -->
+  <div class="bg" aria-hidden="true">
+    <div class="bg-blob bg-blob--1"></div>
+    <div class="bg-blob bg-blob--2"></div>
+    <div class="bg-blob bg-blob--3"></div>
+    <div class="bg-grid"></div>
+  </div>
+
+  <!-- ============ LANDING VIEW ============ -->
+  <main id="landing" class="view view--landing">
+    <nav class="nav">
+      <div class="nav__logo">
+        <span class="nav__logo-mark">🕹️</span>
+        <span class="nav__logo-text">NES<span>PLAYER</span></span>
+      </div>
+      <div class="nav__right">
+        <span class="nav__nova" title="Nova — a NESPLAYER studio brand">NOVA</span>
+<div class="nav__badge" id="versionBadge">v2.10</div>
+
+      </div>
+
+    </nav>
+
+    <section class="hero">
+      <p class="hero__eyebrow">In-Browser · 6502 · Real Hardware Cycles</p>
+      <h1 class="hero__title">Play your NES classics.<br /><span>Right in the browser.</span></h1>
+      <p class="hero__subtitle">
+        Drag a <strong>.nes</strong> ROM into the console below — instant boot with crisp pixel-perfect video,
+        chiptune audio, save states, and full gamepad support.
+      </p>
+
+      <!-- Dropzone -->
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Load a ROM">
+        <div class="dropzone__inner">
+          <div class="dropzone__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 16V4m0 0 4 4m-4-4L8 8" />
+              <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
+            </svg>
+          </div>
+          <p class="dropzone__title">Drop your ROM here</p>
+          <p class="dropzone__hint" id="dropHint">or click to browse your files</p>
+          <button id="btnBrowse" class="btn btn--primary" type="button">Choose ROM</button>
+          <p class="dropzone__formats">Supports .nes · .fds · .unf</p>
+        </div>
+      </div>
+
+      <!-- Feature chips -->
+      <ul class="features">
+        <li class="feature">
+          <span class="feature__icon">🎮</span>
+          <span><strong>Gamepad</strong>Xbox / joystick via Gamepad API</span>
+        </li>
+        <li class="feature">
+          <span class="feature__icon">💾</span>
+          <span><strong>Save states</strong>2 slots per game, in-browser</span>
+        </li>
+        <li class="feature">
+          <span class="feature__icon">🔊</span>
+          <span><strong>Chiptune audio</strong>5-channel APU sound</span>
+        </li>
+        <li class="feature">
+          <span class="feature__icon">⚡</span>
+          <span><strong>60 FPS</strong>pixel-perfect rendering</span>
+        </li>
+      </ul>
+
+      <!-- Recent ROMs -->
+      <section class="recent">
+        <div class="recent__head">
+          <h2 class="recent__title">Recently played</h2>
+          <button id="btnClearRecent" class="btn btn--ghost btn--small" type="button">Clear</button>
+        </div>
+        <div id="recentList" class="recent__grid">
+          <p class="recent__empty">No games yet — load your first ROM above!</p>
+        </div>
+      </section>
+    </section>
+
+    <footer class="foot">
+      <p><span class="foot__brand">NOVA</span> · NESPLAYER · Powered by the <a href="https://github.com/bfirsh/jsnes" target="_blank" rel="noopener">JSNES</a> core · Runs 100% locally in your browser</p>
+    </footer>
+  </main>
+
+  <!-- ============ PLAYER VIEW ============ -->
+  <main id="player" class="view view--player" hidden>
+    <header class="topbar">
+      <div class="topbar__left">
+        <button id="btnBack" class="btn btn--icon" type="button" title="Back to library" aria-label="Back to library">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m0 0 6-6m-6 6 6 6"/></svg>
+        </button>
+        <div class="topbar__game">
+          <span class="topbar__game-name" id="gameTitle">Untitled</span>
+          <span class="topbar__game-meta" id="gameMeta">—</span>
+        </div>
+      </div>
+      <div class="topbar__right">
+        <span class="chip chip--fps" id="fpsDisplay">60 FPS</span>
+        <span class="chip chip--pad" id="padStatus" title="Gamepad status">🎮 none</span>
+        <div class="toolbar">
+          <button id="btnPause" class="btn btn--tool" type="button" title="Pause / Resume (P)">
+            <span class="tool-pause-icon">❚❚</span><span class="tool-label">Pause</span>
+          </button>
+          <button id="btnReset" class="btn btn--tool" type="button" title="Reset the console">
+            <span class="tool-reset-icon">↺</span><span class="tool-label">Reset</span>
+          </button>
+          <button id="btnRewind" class="btn btn--tool" type="button" title="Hold to rewind (Backspace)">
+            <span class="tool-rewind-icon">⟲</span><span class="tool-label">Rewind</span>
+          </button>
+          <button id="btnSound" class="btn btn--tool" type="button" title="Toggle sound">
+            <span id="soundIcon" class="tool-sound-icon">🔊</span><span class="tool-label">Sound</span>
+          </button>
+          <div class="filters">
+            <button id="btnFilters" class="btn btn--tool" type="button" title="Video filters" aria-haspopup="true" aria-expanded="false">
+              <span class="tool-filters-icon">🎛</span><span class="tool-label">Filters</span>
+            </button>
+            <div id="filtersMenu" class="filters-menu" hidden>
+              <div class="filters-menu__head">Video Filters</div>
+              <div class="filters-row">
+                <span class="filters-row__label">Scanlines</span>
+                <button id="fScanlines" class="toggle" type="button" role="switch" aria-checked="false" title="Toggle scanlines">▦</button>
+              </div>
+              <div class="filters-row">
+                <span class="filters-row__label">Static</span>
+                <button id="fStatic" class="toggle" type="button" role="switch" aria-checked="false" title="Toggle subtle static">📺</button>
+              </div>
+              <div class="filters-menu__label">Color Mode</div>
+              <div class="filters-modes">
+                <button class="filters-mode is-active" type="button" data-mode="normal" title="Full original NES palette">Original</button>
+                <button class="filters-mode" type="button" data-mode="gb" title="Monochrome Gameboy green scale">Gameboy</button>
+                <button class="filters-mode" type="button" data-mode="ega" title="EGA 16-color palette">EGA</button>
+                <button class="filters-mode" type="button" data-mode="cga" title="CGA 4-color palette (cyan/magenta)">CGA</button>
+                <button class="filters-mode" type="button" data-mode="bw" title="Luminance black &amp; white">B&amp;W</button>
+              </div>
+            </div>
+          </div>
+          <button id="btnSave1" class="btn btn--tool" type="button" title="Save state to slot 1">
+            <span class="tool-save-icon">💾</span><span class="tool-label">Save</span>
+          </button>
+          <button id="btnLoad1" class="btn btn--tool" type="button" title="Load state from slot 1">
+            <span class="tool-load-icon">📂</span><span class="tool-label">Load</span>
+          </button>
+          <button id="btnFullscreen" class="btn btn--tool" type="button" title="Fullscreen">
+            <span class="tool-fs-icon">⛶</span><span class="tool-label">Full</span>
+          </button>
+<button id="btnDebug" class="btn btn--tool" type="button" title="Open the CPU debugger (G)">
+            <span class="tool-debug-icon">🐞</span><span class="tool-label">Debug</span>
+          </button>
+          <button id="btnCheats" class="btn btn--tool" type="button" title="Game Genie / cheat codes (C)">
+            <span class="tool-cheat-icon">✦</span><span class="tool-label">Cheats</span>
+          </button>
+          <button id="btnBind" class="btn btn--tool" type="button" title="Customize button inputs">
+            <span class="tool-bind-icon">⌨</span><span class="tool-label">Bind</span>
+          </button>
+
+<button id="btnRecord" class="btn btn--tool" type="button" title="Record gameplay video">
+            <span id="recordIcon" class="tool-rec-icon">●</span><span class="tool-label">Record</span>
+          </button>
+          <button id="btnControls" class="btn btn--tool" type="button" title="Show controls">
+            <span class="tool-help-icon">?</span><span class="tool-label">Help</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="player-body">
+      <!-- Console / screen -->
+      <div id="bezel" class="bezel">
+        <div class="bezel__top">
+          <span class="bezel__power">NESPLAYER</span>
+          <div class="bezel__leds">
+            <span class="led led--green" id="ledPower"></span>
+            <span class="led led--red" id="ledPaused"></span>
+          </div>
+        </div>
+        <div id="screenWrap" class="screen-wrap is-ratio-169">
+          <canvas id="screen" width="256" height="240" class="screen"></canvas>
+          <div id="screenOverlay" class="screen-overlay" hidden>
+            <div class="screen-overlay__box">
+              <span class="screen-overlay__icon" id="overlayIcon">⏸</span>
+              <span class="screen-overlay__text" id="overlayText">PAUSED</span>
+            </div>
+          </div>
+          <div class="scanlines" aria-hidden="true"></div>
+          <!-- Fullscreen toolbar: exit + aspect ratio controls -->
+          <div id="fsToolbar" class="fs-toolbar" role="toolbar" aria-label="Fullscreen controls">
+            <div class="fs-toolbar__group" role="group" aria-label="Aspect ratio">
+              <button id="btnRatio43" class="fs-btn" type="button" title="Classic 4:3 aspect (letterboxed, no stretching)">4:3</button>
+              <button id="btnRatio169" class="fs-btn is-active" type="button" title="16:9 stretch to fill the screen">16:9</button>
+            </div>
+            <button id="btnExitFs" class="fs-btn fs-btn--exit" type="button" title="Exit fullscreen (F or Esc)">⏏ Exit</button>
+          </div>
+          <div id="recBadge" class="rec-badge" hidden><span class="dot"></span>REC</div>
+        </div>
+        <div class="bezel__bottom">
+          <span class="bezel__brand">NOVA</span>
+          <div class="bezel__volume">
+            <span class="vol-label">🔊</span>
+            <input id="volumeSlider" class="vol-slider" type="range" min="0" max="100" value="80" aria-label="Volume" />
+          </div>
+          <span class="bezel__brand bezel__brand--right">START · SELECT</span>
+        </div>
+      </div>
+
+      <!-- Side panel: controls reference -->
+      <aside class="side">
+        <section class="panel">
+          <h3 class="panel__title">⌨️ Keyboard</h3>
+          <ul class="keygrid">
+            <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>D-Pad</span></li>
+            <li><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span>D-Pad</span></li>
+            <li><kbd>X</kbd><span>A (Jump)</span></li>
+            <li><kbd>Z</kbd><span>B (Fire)</span></li>
+            <li><kbd>Shift</kbd><span>Select</span></li>
+            <li><kbd>Enter</kbd><span>Start</span></li>
+            <li><kbd>P</kbd><span>Pause</span></li>
+            <li><kbd>F</kbd><span>Fullscreen</span></li>
+            <li><kbd>⌫</kbd><span>Hold to Rewind</span></li>
+            <li><kbd>G</kbd><span>Open Debugger</span></li>
+            <li><kbd>C</kbd><span>Open Cheats</span></li>
+          </ul>
+
+        </section>
+        <section class="panel">
+          <h3 class="panel__title">🎮 Gamepad</h3>
+          <ul class="keygrid">
+            <li><span class="pad-pill">D-Pad</span><span>Move</span></li>
+            <li><span class="pad-pill">L-Stick</span><span>Move</span></li>
+            <li><span class="pad-pill pad-pill--a">A</span><span>A (Jump)</span></li>
+            <li><span class="pad-pill pad-pill--b">B</span><span>B (Fire)</span></li>
+            <li><span class="pad-pill">Back</span><span>Select</span></li>
+            <li><span class="pad-pill">Start</span><span>Start</span></li>
+            <li><span class="pad-pill">RT</span><span>Hold to Rewind</span></li>
+          </ul>
+          <p class="panel__note">X / Y / triggers are free to remap. Open <strong>Bind</strong> to customize every button.</p>
+        </section>
+        <section class="panel panel--input">
+          <h3 class="panel__title">🕹️ Live Input</h3>
+          <div class="input-hud">
+            <button id="hudUp" class="hud-key" type="button" disabled title="D-Pad Up">▲</button>
+            <button id="hudDown" class="hud-key" type="button" disabled title="D-Pad Down">▼</button>
+            <button id="hudLeft" class="hud-key" type="button" disabled title="D-Pad Left">◀</button>
+            <button id="hudRight" class="hud-key" type="button" disabled title="D-Pad Right">▶</button>
+            <button id="hudB" class="hud-key hud-key--b" type="button" disabled title="B">B</button>
+            <button id="hudA" class="hud-key hud-key--a" type="button" disabled title="A">A</button>
+            <button id="hudSelect" class="hud-key" type="button" disabled title="Select">SEL</button>
+            <button id="hudStart" class="hud-key" type="button" disabled title="Start">STA</button>
+          </div>
+          <p class="panel__note">These light up the moment the emulator receives input — a quick way to confirm your D-pad and buttons are mapped.</p>
+        </section>
+        <section class="panel panel--meta">
+          <h3 class="panel__title">📄 ROM Info</h3>
+          <dl class="rommeta" id="romMeta">
+            <div><dt>File</dt><dd id="mFile">—</dd></div>
+            <div><dt>Size</dt><dd id="mSize">—</dd></div>
+            <div><dt>Mapper</dt><dd id="mMapper">—</dd></div>
+            <div><dt>PRG Banks</dt><dd id="mPrg">—</dd></div>
+            <div><dt>CHR Banks</dt><dd id="mChr">—</dd></div>
+            <div><dt>Mirroring</dt><dd id="mMirror">—</dd></div>
+            <div><dt>Battery</dt><dd id="mBattery">—</dd></div>
+          </dl>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <!-- ============ DEBUGGER MODAL ============ -->
+  <div id="debugModal" class="modal modal--debug" hidden role="dialog" aria-modal="true" aria-labelledby="dbgTitle">
+    <div class="modal__backdrop"></div>
+    <div class="modal__box">
+      <div class="modal__head">
+        <h3 id="dbgTitle" class="modal__title">🐞 CPU Debugger</h3>
+        <div class="dbg-head-actions">
+          <button id="dbgStep" class="btn btn--ghost btn--small" type="button" title="Run one frame, then pause (auto-pauses on open)">Step ▸</button>
+          <button id="dbgRun" class="btn btn--ghost btn--small" type="button" title="Close the debugger and resume the game">Run ▶</button>
+          <button id="dbgClose" class="modal__close" type="button" aria-label="Close debugger">✕</button>
+        </div>
+      </div>
+      <p class="modal__hint">Auto-paused. Inspect registers, disassemble at the PC, patch RAM/PRG bytes, or assemble a 6502 routine and write it straight into memory.</p>
+
+      <div class="dbg-layout">
+        <!-- Left column: registers + disassembly -->
+        <div class="dbg-col">
+          <section class="dbg-panel">
+            <div class="dbg-panel__head">
+              <span class="dbg-panel__title">Registers</span>
+            </div>
+            <div id="dbgRegs" class="dbg-reg-grid"></div>
+            <div id="dbgFlags" class="dbg-flags" title="N V - B D I Z C"></div>
+          </section>
+
+          <section class="dbg-panel">
+            <div class="dbg-panel__head">
+              <span class="dbg-panel__title">Disassembly</span>
+              <div class="dbg-panel__tools">
+                <button id="dbgFollow" class="dbg-mini" type="button" title="Follow the program counter">PC</button>
+                <button id="dbgDisasmPrev" class="dbg-mini" type="button" title="Scroll disassembly up">◀</button>
+                <button id="dbgDisasmNext" class="dbg-mini" type="button" title="Scroll disassembly down">▶</button>
+              </div>
+            </div>
+            <div id="dbgDisasm" class="dbg-disasm"></div>
+          </section>
+        </div>
+
+        <!-- Right column: hex editor + assembler -->
+        <div class="dbg-col">
+          <section class="dbg-panel">
+            <div class="dbg-panel__head">
+              <span class="dbg-panel__title">Memory <span id="dbgHexAddr" class="dbg-hex-addr"></span></span>
+              <div class="dbg-panel__tools">
+                <button id="dbgHexRam" class="dbg-mini is-active" type="button" title="Edit RAM $0000">RAM</button>
+                <button id="dbgHexPrg" class="dbg-mini" type="button" title="Edit PRG ROM $8000">PRG</button>
+                <button id="dbgHexPrev" class="dbg-mini" type="button" title="Previous page">◀</button>
+                <button id="dbgHexNext" class="dbg-mini" type="button" title="Next page">▶</button>
+                <button id="dbgHexPc" class="dbg-mini" type="button" title="Jump to PC">PC</button>
+              </div>
+            </div>
+            <div class="dbg-hex-scroll">
+              <table class="dbg-hex-table">
+                <tbody id="dbgHexGrid"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="dbg-panel">
+            <div class="dbg-panel__head">
+              <span class="dbg-panel__title">Assembler</span>
+            </div>
+            <div class="dbg-asm-row">
+              <label class="dbg-asm-label" for="dbgAsmOrigin">Origin</label>
+              <input id="dbgAsmOrigin" class="dbg-asm-origin" type="text" value="$8000" spellcheck="false" aria-label="Assembler origin address" />
+            </div>
+            <textarea id="dbgAsmSource" class="dbg-asm-source" spellcheck="false" placeholder="; Example: infinite colour-cycling loop
+loop:
+  LDA #$05
+  STA $2001
+  JMP loop"></textarea>
+            <div class="dbg-asm-actions">
+              <button id="dbgAsmAssemble" class="btn btn--ghost btn--small" type="button" title="Assemble and show the bytes without writing">Assemble</button>
+              <button id="dbgAsmWrite" class="btn btn--ghost btn--small" type="button" title="Assemble and write the bytes to memory">Write</button>
+              <button id="dbgAsmResetApply" class="btn btn--ghost btn--small" type="button" title="Reset the console, then apply the routine and set PC to origin">Reset &amp; Apply</button>
+            </div>
+            <div id="dbgAsmStatus" class="dbg-asm-status" aria-live="polite"></div>
+          </section>
+        </div>
+      </div>
+
+      <div id="dbgStatus" class="dbg-status"></div>
+    </div>
+  </div>
+
+<!-- ============ CHEAT MODAL ============ -->
+  <div id="cheatModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="cheatTitle">
+    <div class="modal__backdrop"></div>
+    <div class="modal__box">
+      <div class="modal__head">
+        <h3 id="cheatTitle" class="modal__title">✦ Cheat Codes</h3>
+        <button id="cheatClose" class="modal__close" type="button" aria-label="Close cheats">✕</button>
+      </div>
+      <p class="modal__hint">
+        Enter a hex code as <kbd>ADDR:VALUE</kbd> (e.g. <kbd>$8000:A9</kbd>) or <kbd>ADDR:VALUE:COMPARE</kbd> for conditional patches.
+        Game Genie 6/8-letter codes are also decoded automatically. Cheats are applied every frame and cleared on ROM load.
+      </p>
+      <div class="cheat-input-row">
+        <input id="cheatInput" class="cheat-input" type="text" spellcheck="false" placeholder="e.g. $8000:A9  or  SXIOPO" aria-label="Enter cheat code" />
+        <button id="cheatAdd" class="btn btn--ghost btn--small" type="button">Add</button>
+      </div>
+      <div id="cheatHint" class="bind-hint" aria-live="polite"></div>
+      <div id="cheatList" class="cheat-list">
+        <p class="cheat-empty">No cheats added yet.</p>
+      </div>
+      <div class="modal__foot">
+        <button id="cheatClearAll" class="btn btn--ghost" type="button">Clear All</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bindings modal -->
+  <div id="bindModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="bindTitle">
+    <div class="modal__backdrop"></div>
+    <div class="modal__box">
+      <div class="modal__head">
+        <h3 id="bindTitle" class="modal__title">Customize Controls</h3>
+        <button id="btnCloseModal" class="modal__close" type="button" aria-label="Close bindings">✕</button>
+      </div>
+      <p class="modal__hint">Click any <kbd>key</kbd> badge then press the new key, or click a <span class="bind-badge bind-badge--pad">pad</span> badge then press a gamepad button. Each NES button has a primary key, an alternate key, and a gamepad button.</p>
+      <div id="bindHint" class="bind-hint" aria-live="polite"></div>
+      <div id="bindRows" class="bind-rows"></div>
+      <div class="modal__foot">
+        <button id="btnResetBindings" class="btn btn--ghost" type="button">Reset to defaults</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <!-- Hidden file input -->
+  <input id="romInput" type="file" accept=".nes,.fds,.unf,application/octet-stream" hidden />
+
+<script src="js/neslib/jsnes.min.js?v=20240916.01"></script>
+  <script src="js/asm6502.js?v=20240916.01"></script>
+  <script src="js/debugger.js?v=20240916.01"></script>
+<script src="js/app.js?v=20240916.03"></script>
+
+
+</body>
+</html>
+
