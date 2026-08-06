@@ -1025,6 +1025,100 @@ body.no-scroll { overflow: hidden; }
   background: rgba(255, 46, 77, 0.12);
 }
 
+/* ============================================================
+   NETPLAY MODAL — Two-Player WebSocket netplay
+   ============================================================ */
+.netplay-server {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.netplay-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.netplay-input {
+  flex: 1;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 9px 12px;
+  outline: none;
+  transition: border-color 0.15s ease;
+  width: 100%;
+}
+.netplay-input:focus {
+  border-color: rgba(63, 224, 255, 0.4);
+}
+.netplay-input::placeholder {
+  color: var(--text-faint);
+  font-style: italic;
+  font-weight: 400;
+}
+.netplay-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.netplay-join-row {
+  margin-bottom: 12px;
+}
+.netplay-join-row .netplay-input {
+  text-align: center;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+}
+.netplay-status {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.netplay-status.is-live {
+  color: var(--cyan);
+  border-color: rgba(63, 224, 255, 0.5);
+  background: rgba(63, 224, 255, 0.06);
+}
+.netplay-status.is-error {
+  color: #ffb3be;
+  border-color: rgba(255, 46, 77, 0.5);
+}
+.netplay-room {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(120deg, rgba(63, 224, 255, 0.1), rgba(255, 209, 102, 0.08));
+  border: 1px solid rgba(63, 224, 255, 0.35);
+  margin-bottom: 12px;
+}
+.netplay-room-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.netplay-room-code {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 20px;
+  letter-spacing: 6px;
+  color: var(--cyan);
+  text-shadow: 0 0 14px rgba(63, 224, 255, 0.5);
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 960px) {
   .player-body { grid-template-columns: 1fr; }

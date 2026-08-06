@@ -1,0 +1,4 @@
+[HOST] created room NP3B
+[GUEST] joined room NP3B
+[HOST] guest-joined -> reset nes + send ROM
+[GUEST] got ROM -> loadRomString...

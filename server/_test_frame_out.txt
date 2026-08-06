@@ -1,0 +1,3 @@
+loadROM OK
+frame() ran 5 times WITHOUT hanging/throwing
+crashMessage: (none)

@@ -1,0 +1,15 @@
+{
+  "name": "nesplayer-netplay-relay",
+  "version": "1.0.0",
+  "description": "NESPLAYER WebSocket netplay relay + static host",
+  "main": "relay.js",
+  "scripts": {
+    "start": "node relay.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

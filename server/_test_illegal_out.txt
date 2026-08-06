@@ -1,0 +1,6 @@
+stop defined: function
+frame overridden: true
+frame() returned 3 times in 14ms (NO HANG)
+running after crash: true
+crashMessage: undefined
+PASS: illegal opcode halted gracefully instead of freezing

@@ -1,59 +1,61 @@
-# NESPLAYER - NES Emulator Web App — TASK CHECKLIST
+# Netplay Full Game-Loop Integration
 
-## Continuing the "complete debugger" task after extension crash
+## Tasks
+- [x] 1. netplay.js: Set host's `romReady`/start when the guest joins (host currently never becomes ready).
+- [x] 2. netplay.js: Fix frame-0 deadlock — each player must send their input for the current frame even before receiving the peer's (track `lastSentFrame`).
+- [x] 3. netplay.js: Reset host emulator on guest join so both sides boot from the same reset state.
+- [x] 4. app.js: Fix host `romBytes` getter (it wrongly passes the binary string through `buildBinaryString`).
+- [x] 5. app.js: Add `loadRomString` to `window.__nesplayer` so the guest can load the received ROM bytes.
+- [x] 6. app.js: Make `applyInput` target controller 2 when the local player is the guest.
+- [x] 7. app.js: Make `releaseAllInput` target the correct controller in netplay mode.
+- [x] 8. app.js: Make `netplayFeed` send local input into the correct controller slot (p1 for host, p2 for guest).
+- [x] 9. app.js: Wire `netplayFeed()` + `GG.step()` + `GG.applyRemote()` into `stepEmulator()` (gate frames on peer input).
+- [x] 10. Validate with `node --check`.
 
-### v2.9 Assembler/Debugger (already complete pre-crash)
-- [x] 1. `js/asm6502.js` — `window.ASM6502` library (opcode table, 2-pass assembler, disassembler)
-- [x] 2. `js/debugger.js` — `window.NESDebugger` (registers, disasm at PC, hex editor RAM/PRG, assembler box, Step/Run/Close)
-- [x] 3. `index.html` — `#btnDebug` toolbar button, `#debugModal` markup, script tags for `asm6502.js` + `debugger.js`
-- [x] 4. `css/style.css` — debug modal layout, register grid, disasm rows, hex-table cells, assembler styles
-- [x] 5. `js/app.js` — debug button/modal wiring, open/close lifecycle (auto-pause), one-frame Step hook, `G` shortcut
-- [x] 6. Docs — README debugger section + tech notes
-- [x] 7. Verify — `node --check` on `asm6502.js`, `debugger.js`, `app.js`
+## Additional Fix
+- [x] Install missing `ws` dependency in `server/` so the relay server can start (root cause of "create room does nothing").
+- [x] netplay.js: Surface WebSocket connect failures (onerror/onclose/timeout) so the UI doesn't hang on "Connecting…".
+- [x] netplay.js: Add a default server URL fallback derived from the page origin (or `ws://localhost:3000`).
+- [x] netplay.js: Add a ready-handshake so the host starts the lockstep only after the guest has loaded the ROM and connected (fixes host freeze / guest gray-screen deadlock).
 
-### v2.10 Game Genie-style Cheat Overlay (remaining work after crash)
-- [x] 1. `index.html` — `#btnCheats` toolbar button, `#cheatModal` markup, `C` shortcut panel entry, cache-bust `?v=20240915.11`, badge `v2.10`
-- [x] 2. `css/style.css` — cheat modal layout, cheat list rows, input row
-- [x] 3. `js/app.js` — cheats state, hex code parser (`ADDR:VALUE` / `ADDR:VALUE:COMPARE`), Game Genie decoder, `applyCheats()` frame hook, open/close wiring, `C` shortcut, clear-on-ROM-load, toast feedback
-- [x] 4. `README.md` — document Cheats (controls, code format, Game Genie support)
-- [x] 5. Final verify — `node --check js/app.js` passes
+## Post-fix (this session)
+- [x] netplay.js: Add `GG.isReady()` (active && romReady) so the host does NOT freeze
+      while waiting for a guest to join/sync.
+- [x] app.js: Gate `stepEmulator()` lockstep on `GG.isReady()` instead of `GG.isActive()`.
+- [x] index.html: Bump `netplay.js`/`app.js` cache-buster.
 
-### Current work (v2.10 completion, resumed after crash)
-- [x] A. `js/app.js` — add `GG_ALPHABET` + `decodeGameGenie()` (6- and 8-letter codes → addr/value/compare) wired into `addCheatFromInput()`
-- [x] B. `css/style.css` — add cheat modal styles (`.cheat-input-row`, `.cheat-input`, `.cheat-list`, `.cheat-empty`, `.cheat-row` + parts)
-- [x] C. `README.md` — add Cheat Codes section / feature bullet / keyboard `C`
-- [x] D. Mark v2.10 steps 3-5 complete + `node --check js/app.js`
+## Post-fix round 2 (connection-loss / freeze hardening)
+- [x] netplay.js: Add a lockstep stall guard (`lastActivity` + `STALL_TIMEOUT`) in `GG.step()`.
+- [x] netplay.js: `ws.onclose` fully resets lockstep state.
+- [x] netplay.js: `peer-left` handler fully resets lockstep state.
+- [x] Validate: `node --check` + lockstep protocol test passes.
 
-### v2.10.1 Fix Game Genie decode (resumed after crash)
-- [x] 1. `js/app.js` — replace broken `swapBits()` nibble-swap decoder with the patent-accurate bit-field formulas
-- [x] 2. `README.md` — document the corrected Game Genie decoding algorithm
-- [x] 3. `index.html` — bump cache-bust query string so the fixed `app.js` is served fresh (`?v=20240916.03`)
-- [x] 4. Verify — `node --check` on `js/app.js` + confirm `GZUXNGEI` decodes to `$2C3F` (verified via standalone node script: `GZUXNGEI -> addr=0x2C3F value=0x24` PASS)
+## Current fixes (user feedback: host froze + guest had to load a ROM)
+- [x] 1. index.html: Add a "Netplay" button to the main (landing) menu so both host and
+      guest can open netplay without loading a ROM first.
+- [x] 2. netplay.js: Fix the stall guard — track time since the last *received* peer
+      message (lastRx) instead of refreshing on every send, so a silently-dead peer
+      reliably triggers a disconnect instead of leaving the host frozen.
+- [x] 3. netplay.js: Expose `GG.isReady()` and make the host's lockstep gating robust so
+      the host never freezes regardless of whether ROM transfer completes.
+- [x] 4. Validate with `node --check` and re-run the lockstep protocol test.
 
-### Final verify (v2.10)
-- [x] `node --check` passes on `js/app.js`, `js/asm6502.js`, `js/debugger.js`
-- [x] Cache-bust `?v=20240915.11` + badge `v2.10` confirmed in `index.html`
-- [x] Full-stack grep confirmations: `btnDebug`/`cheatModal`/`asm6502.js`/`debugger.js` script tags present; `dbg-*`/`cheat-*` CSS present; `NESDebugger`/`GG_ALPHABET`/`decodeGameGenie`/`applyCheats` wiring present in `app.js`
+## This session (modal polish)
+- [x] app.js: Suppress game input while the netplay modal is open (the game was still
+      running / receiving input underneath the modal).
+- [x] app.js: Escape now closes the netplay modal, and `netplayModalOpen` is included in
+      `anyModal` so game shortcuts don't fire while it's open.
 
-### v2.10 Game Genie decoder fix (after crash)
-- [x] `js/app.js` — `decodeGameGenie()` replaced with patent-accurate bit-field formulas
-  (6-letter: address/data; 8-letter bank-switch: address/data/compare)
-- [x] `js/app.js` — decoder now returns the **15-bit PRG offset** (e.g. `GZUXNG` → `$2C3F`);
-  `addCheatFromInput` ORs in `$8000` before storing so the mapper read-hook matches the
-  full `$8000-$FFFF` CPU window, while the UI label shows the user-facing offset
-- [x] `README.md` — Game Genie section documents the bit-field layout + offset convention
-- [x] Verified with `node`: `GZUXNG` → offset `$2C3F` value `$24` ; 8-char `GZUXNGEI` →
-  `$2D38` value `$24` compare `$C7` ; famous ref `SXIOPO` → `$11D9`=`$AD` (full `$91D9`)
-- [x] `node --check js/app.js` → SYNTAX_OK
-
-## Final Project Structure
-```
-index.html                  # App shell + landing + player views
-css/style.css               # Modern dark glassmorphism UI
-js/app.js                   # Full application logic (incl. cheats)
-js/asm6502.js               # 6502 assembler + disassembler library
-js/debugger.js              # RAM/PRG hex editor + CPU debugger
-js/neslib/jsnes.min.js      # Vendored emulator core (1.2.1)
-README.md                   # Setup & usage docs
-```
-
+## This session (definitive netplay disconnect/freeze fix)
+- [x] Reproduce the guest-disconnect / host-freeze bug with the protocol + app-level repros.
+- [x] Identify root cause: the ready-handshake in netplay.js resets `haveRemote=false`,
+      dropping the peer's already-received frame-0 input (arrives during 'syncing' due to
+      message coalescing), deadlocking the guest -> stall-guard disconnect -> host sees
+      "Player disconnected" then freezes.
+- [x] netplay.js: Add `becomeReady()` that preserves `haveRemote`/`remoteInput` across the
+      ready handshake (only filters pending to frames > 0), and use it in both host and
+      guest ready handlers so the peer's frame-0 input is never dropped.
+- [x] Validate with `node --check js/netplay.js` and re-run the lockstep repros against the live relay.
+      - `node --check js/netplay.js` -> OK
+      - `server/repro3.js` (real jsnes) -> SUCCESS, both advanced to frame 199
+      - `server/repro4.js` (frame-0 race) -> PASS, frame-0 input preserved, no stall/disconnect

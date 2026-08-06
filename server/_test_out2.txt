@@ -1,0 +1,3 @@
+stop before polyfill: undefined
+stop after polyfill: function
+stop.call(fake) OK, running=false, crash=Game crashed: invalid opcode

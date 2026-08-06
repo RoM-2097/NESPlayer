@@ -52,10 +52,11 @@
   var modalOpen = false;
 var debuggerOpen = false;  // debugger modal active state
   var debugWasPaused = false; // pause state before the debugger auto-paused
-  var cheatModalOpen = false;  // cheat modal active state
+var cheatModalOpen = false;  // cheat modal active state
   var cheats = [];             // array of { addr, value, compare (or null), label }
   var cheatHookActive = false; // is the PRG-read cheat hook installed on nes.mmap.load?
   var originalMmapLoad = null; // original nes.mmap.load (restored when the hook is removed)
+  var netplayModalOpen = false; // netplay modal active state
   var capturing = null;   // { nes, field, type } while waiting for a key/pad press
   var padCaptureActive = false;
 
@@ -111,7 +112,19 @@ btnDebug: $('btnDebug'),
     cheatHint: $('cheatHint'),
     cheatList: $('cheatList'),
     cheatClearAll: $('cheatClearAll'),
-    btnControls: $('btnControls'),
+btnControls: $('btnControls'),
+    btnNetplay: $('btnNetplay'),
+    btnNetplayLanding: $('btnNetplayLanding'),
+    netplayModal: $('netplayModal'),
+    netplayClose: $('netplayClose'),
+    netplayUrl: $('netplayUrl'),
+    netplayCreate: $('netplayCreate'),
+    netplayJoin: $('netplayJoin'),
+    netplayRoomCode: $('netplayRoomCode'),
+    netplayStatus: $('netplayStatus'),
+    netplayRoomBox: $('netplayRoomBox'),
+    netplayRoomCodeDisplay: $('netplayRoomCodeDisplay'),
+    netplayDisconnect: $('netplayDisconnect'),
     btnBind: $('btnBind'),
     btnRecord: $('btnRecord'),
     recordIcon: $('recordIcon'),
@@ -389,7 +402,25 @@ btnDebug: $('btnDebug'),
     if (els.btnRewind) els.btnRewind.classList.remove('is-rewinding');
   }
 
-  /* ---------- NES core ---------- */
+/* ---------- NES core ---------- */
+  // The vendored jsnes.min.js core calls `this.nes.stop()` when the CPU hits an
+  // ILLEGAL 6502 opcode, but this build never defines `stop()`. That makes
+  // nes.frame() throw `TypeError: this.nes.stop is not a function`, which the
+  // netplay lockstep try/catch turns into a "Netplay error" + a frozen host.
+  // Polyfill `stop()` once, before any NES instance is created, so an illegal
+  // opcode halts gracefully (sets running=false + crashMessage) instead of
+  // throwing. This is belt-and-suspenders with the netplay.js polyfill.
+  (function ensureNesStop() {
+    try {
+      if (jsnes.NES && jsnes.NES.prototype && typeof jsnes.NES.prototype.stop === 'undefined') {
+        jsnes.NES.prototype.stop = function () {
+          this.running = false;
+          this.crashMessage = 'Game crashed: invalid opcode';
+        };
+      }
+    } catch (e) { /* best-effort */ }
+  })();
+
   function createNES() {
     var rate = audioCtx ? audioCtx.sampleRate : 44100;
     return new jsnes.NES({
@@ -509,7 +540,7 @@ btnDebug: $('btnDebug'),
   var stepAccumulator = 0;
   var lastStepTime = 0;
 
-  function frame(timestamp) {
+function frame(timestamp) {
     if (!lastStepTime) lastStepTime = timestamp;
     var elapsed = timestamp - lastStepTime;
     lastStepTime = timestamp;
@@ -517,15 +548,30 @@ btnDebug: $('btnDebug'),
     if (elapsed > 250) elapsed = 250;
     stepAccumulator += elapsed;
 
-    while (stepAccumulator >= STEP_MS) {
-      stepEmulator();
-      stepAccumulator -= STEP_MS;
+    // Never let a single bad frame kill the render loop. If stepEmulator()
+    // throws (e.g. a netplay lockstep edge case), we still re-schedule the
+    // next rAF so the game can never freeze on a silent exception.
+    try {
+      while (stepAccumulator >= STEP_MS) {
+        stepEmulator();
+        stepAccumulator -= STEP_MS;
+      }
+    } catch (err) {
+      console.error('[nesplayer] stepEmulator error:', err);
+      // If a session is active, tear netplay down so the game degrades to
+      // normal single-player playback instead of stalling on a dead peer.
+      var GGg = window.NESNetplay;
+      if (GGg && GGg.isActive && GGg.isActive()) {
+        try { GGg.disconnect(); } catch (e) { /* ignore */ }
+        toast('Netplay error — resuming single-player', 'error');
+      }
+      stepAccumulator = 0;
     }
     trackFPS();
     requestAnimationFrame(frame);
   }
 
-  function stepEmulator() {
+function stepEmulator() {
     // When the RGB self-test is shown, don't step the emulator, so the bars
     // stay perfectly stable instead of being overwritten by the game frame.
     if (!(running && !paused && nes && !testPattern)) return;
@@ -537,7 +583,14 @@ btnDebug: $('btnDebug'),
       return;
     }
 
-    if (!modalOpen && !cheatModalOpen && !debuggerOpen) {
+var GG = window.NESNetplay;
+    // Lockstep only gates the emulator once BOTH sides are connected and have
+    // the ROM (isReady). While the host is waiting for a guest to join/sync,
+    // isReady() is false and the host keeps running normally instead of
+    // freezing on room creation.
+    var netplayActive = !!(GG && GG.isReady && GG.isReady());
+
+if (!modalOpen && !cheatModalOpen && !debuggerOpen && !netplayModalOpen) {
       // Rebuild the reverse maps from the LIVE bindings every frame, then
       // derive the desired button states from the held physical inputs.
       // This guarantees a binding captured in the Bind modal works
@@ -546,10 +599,28 @@ btnDebug: $('btnDebug'),
       pollGamepad();
       applyInput(nes);
     } else {
-      // While a modal (bind, cheats, debugger) is open, hold inputs so
-      // accidental presses don't reach the game.
+      // While a modal (bind, cheats, debugger, netplay) is open, hold inputs
+      // so accidental presses don't reach the game.
       releaseAllInput();
     }
+
+// In netplay (deterministic lockstep), feed our local input to the module
+    // and only advance a frame once the peer's input for this frame has
+    // arrived. GG.step() returns true only when we may advance. This section
+    // is isolated so a netplay edge-case can never take down the emulator or
+    // the render loop — on error we tear the session down and keep playing.
+    if (netplayActive) {
+      try {
+        netplayFeed();
+        if (!GG.step()) return;   // wait for the opponent's input this frame
+        GG.applyRemote(nes);      // apply the opponent's input to the other pad
+      } catch (err) {
+        console.error('[nesplayer] netplay lockstep error:', err);
+        try { GG.disconnect(); } catch (e) { /* ignore */ }
+        toast('Netplay error — resuming single-player', 'error');
+      }
+    }
+
     // Re-apply active cheats right before the frame so the game sees the
     // modified bytes (and can't overwrite them between frames).
     applyCheats();
@@ -798,7 +869,7 @@ btnDebug: $('btnDebug'),
   function handleKeyDown(e) {
     if (e.repeat) return;
 
-    var anyModal = modalOpen || cheatModalOpen || debuggerOpen;
+var anyModal = modalOpen || cheatModalOpen || debuggerOpen || netplayModalOpen;
 
     // While capturing a binding, the next key press gets assigned.
     if (modalOpen && capturing) {
@@ -824,9 +895,10 @@ btnDebug: $('btnDebug'),
 
     // Escape always closes whatever modal is on top.
     if (e.code === 'Escape') {
-      if (modalOpen) closeBindModal();
+if (modalOpen) closeBindModal();
       else if (cheatModalOpen) closeCheatModal();
       else if (debuggerOpen) closeDebugger();
+      else if (netplayModalOpen) closeNetplayModal();
       else if (fullscreen) exitFullscreen();
       return;
     }
@@ -922,6 +994,16 @@ btnDebug: $('btnDebug'),
     if (el) el.classList.toggle('is-pressed', !!on);
   }
 
+// The controller this local player controls. In netplay the host is Player 1
+  // and the guest is Player 2; outside netplay there is only Player 1.
+  function localController() {
+    var GG = window.NESNetplay;
+    if (GG && GG.isActive && GG.isActive()) {
+      return GG.getRole() === 'guest' ? 2 : 1;
+    }
+    return 1;
+  }
+
   // Compute the desired state for every NES button from the held physical
   // inputs (keyboard + gamepad) using the LIVE bindings, then push only the
   // buttonDown/buttonUp transitions to the core. Because the reverse maps are
@@ -940,26 +1022,28 @@ btnDebug: $('btnDebug'),
     for (var ab in axisHeld) {
       if (axisHeld[ab]) desired[ab] = true;
     }
+    var ctrl = localController();
     for (var j = 0; j < NES_BUTTONS.length; j++) {
       var nid = NES_BUTTONS[j].id;
       var on = !!desired[nid];
       if (on !== inputPrev[nid]) {
-        if (on) nesObj.buttonDown(1, nid);
-        else nesObj.buttonUp(1, nid);
+        if (on) nesObj.buttonDown(ctrl, nid);
+        else nesObj.buttonUp(ctrl, nid);
         inputPrev[nid] = on;
       }
       setHud(nid, on);
     }
   }
 
-  // Release every button that was previously applied to the core (used while
+// Release every button that was previously applied to the core (used while
   // the bindings modal is open so captured presses never reach the game).
   function releaseAllInput() {
     if (!nes) return;
+    var ctrl = localController();
     for (var j = 0; j < NES_BUTTONS.length; j++) {
       var nid = NES_BUTTONS[j].id;
       if (inputPrev[nid]) {
-        nes.buttonUp(1, nid);
+        nes.buttonUp(ctrl, nid);
         inputPrev[nid] = false;
         setHud(nid, false);
       }
@@ -1140,11 +1224,153 @@ btnDebug: $('btnDebug'),
     if (els.cheatInput) els.cheatInput.focus();
   }
 
-  function closeCheatModal() {
+function closeCheatModal() {
     cheatModalOpen = false;
     els.cheatModal.hidden = true;
     document.body.classList.remove('no-scroll');
   }
+
+/* ---------- Netplay ---------- */
+  // The netplay socket lives in js/netplay.js (window.NESNetplay). It is a
+  // deterministic-lockstep module: the host loads the ROM and ships the bytes
+  // to the guest, and both advance frames only once each has the other's input.
+  // app.js exposes the modal, wires the host/guest callbacks, and feeds the
+  // module the local controller state each frame.
+  function toggleNetplayModal() {
+    if (netplayModalOpen) closeNetplayModal();
+    else openNetplayModal();
+  }
+
+  function openNetplayModal() {
+    netplayModalOpen = true;
+    els.netplayModal.hidden = false;
+    document.body.classList.add('no-scroll');
+    // Restore a previously used server URL (or default to localhost).
+    try {
+      var savedUrl = localStorage.getItem('nesplayer.netplay.url');
+      if (savedUrl) els.netplayUrl.value = savedUrl;
+    } catch (e) {}
+    if (!els.netplayUrl.value) els.netplayUrl.value = 'ws://localhost:3000';
+  }
+
+  function closeNetplayModal() {
+    netplayModalOpen = false;
+    els.netplayModal.hidden = true;
+    document.body.classList.remove('no-scroll');
+  }
+
+  // Set the status line in the netplay modal.
+  function netplayStatus(msg, cls) {
+    if (!els.netplayStatus) return;
+    els.netplayStatus.textContent = msg;
+    els.netplayStatus.className = 'netplay-status' + (cls ? ' ' + cls : '');
+  }
+
+  // Wire the netplay module's callbacks into the app UI and emulator. Called
+  // once at startup (netplay.js is guaranteed loaded before the DOMContentLoaded
+  // init because index.html loads it first).
+  function initNetplay() {
+    var GG = window.NESNetplay;
+    if (!GG) return;
+
+    // netplay.js owns the modal open/close via these callbacks.
+    GG.onOpen = openNetplayModal;
+    GG.onClose = closeNetplayModal;
+    GG.onToast = toast;
+    GG.onStateChange = function (s) {
+      var labels = {
+        idle: 'Disconnected',
+        connecting: 'Connecting…',
+        hosting: 'Hosting…',
+        waiting: 'Waiting for a player…',
+        syncing: 'Syncing ROM…',
+        playing: 'Playing',
+        error: 'Connection error',
+        ended: 'Session ended'
+      };
+      netplayStatus(labels[s] || s, s === 'error' ? 'is-error' : (s === 'playing' ? 'is-ok' : ''));
+    };
+    GG.onRoomCreated = function (code) {
+      if (els.netplayRoomCodeDisplay) els.netplayRoomCodeDisplay.textContent = code;
+      if (els.netplayRoomBox) els.netplayRoomBox.hidden = false;
+      netplayStatus('Room ' + code + ' created — share this code', 'is-ok');
+    };
+    GG.onJoined = function (code) {
+      netplayStatus('Joined room ' + code, 'is-ok');
+      els.netplayRoomBox.hidden = true;
+    };
+
+// Host/guest config. The host provides the loaded ROM bytes so the guest
+    // can bootstrap identically; onStart/onStop just surface status.
+    GG.init({
+      host: {
+        get nes() { return nes; },
+        // nes.romData is already the binary string produced by buildBinaryString
+        // in loadROM(); pass it through unchanged (never re-run buildBinaryString).
+        get romBytes() { return (nes && nes.romData) ? nes.romData : null; },
+        get romName() { return romName; },
+        onStart: function () { netplayStatus('Playing — 2 players connected', 'is-ok'); },
+        onStop: function () { netplayStatus('Netplay ended', 'is-error'); }
+      },
+guest: {
+        get nes() { return nes; },
+        loadRom: function (bytes, name) {
+          // Guest receives the raw ROM bytes as a string and boots identically.
+          if (window.__nesplayer && window.__nesplayer.loadRomString) {
+            window.__nesplayer.loadRomString(bytes, name);
+          }
+        },
+        onStart: function () { netplayStatus('Playing — 2 players connected', 'is-ok'); },
+        onStop: function () { netplayStatus('Netplay ended', 'is-error'); }
+      }
+    });
+  }
+
+// Feed the current local controller state into the netplay module each frame.
+  // p1/p2 are 8-element mask arrays (A,B,SEL,START,UP,DOWN,LEFT,RIGHT).
+  // The host's local input goes into p1 (Player 1), the guest's into p2
+  // (Player 2) — the peer receives the opposite slot as its opponent.
+  function netplayFeed() {
+    var GG = window.NESNetplay;
+    if (!GG || !GG.isActive()) return;
+    var p1 = [], p2 = [];
+    for (var j = 0; j < NES_BUTTONS.length; j++) {
+      var nid = NES_BUTTONS[j].id;
+      var on = !!inputPrev[nid] ? 1 : 0;
+      if (GG.getRole() === 'guest') p2.push(on);
+      else p1.push(on);
+    }
+    // Pad the opposite array to 8 entries so both are always full-length.
+    while (p1.length < 8) p1.push(0);
+    while (p2.length < 8) p2.push(0);
+    GG.setLocalInput({ p1: p1, p2: p2 });
+  }
+
+  // Load a ROM from its raw binary string (used by the netplay guest to boot
+  // the identical ROM the host sent). Mirrors loadROM() but accepts a string.
+  function loadRomString(str, fileName) {
+    var bytes = new Uint8Array(str.length);
+    for (var i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i) & 0xFF;
+    // Reuse the existing load path (it validates the header + builds the NES).
+    loadROM(bytes.buffer, fileName || 'netplay.nes');
+  }
+
+  // Expose the pieces netplay.js needs back into app.js (ROM-byte loading for
+  // the guest, plus a few helpers).
+  window.__nesplayer = {
+    get nes() { return nes; },
+    get paused() { return paused; },
+    set paused(v) { paused = v; updatePauseUI(); },
+    get running() { return running; },
+    set running(v) { running = v; },
+    get romName() { return romName; },
+    get romData() { return nes ? nes.romData : null; },
+    loadROM: loadROM,
+    loadRomString: loadRomString,
+    toast: toast,
+    netplayFeed: netplayFeed,
+    buildBinaryString: buildBinaryString
+  };
 
 // ---------- Game Genie decoder ----------
   // NES Game Genie alphabet: A=0, P=1, Z=2, L=3, G=4, I=5, T=6, Y=7,
@@ -1923,8 +2149,33 @@ btnDebug: $('btnDebug'),
     });
     els.cheatAdd.addEventListener('click', addCheatFromInput);
     els.cheatClearAll.addEventListener('click', clearAllCheats);
-    els.cheatInput.addEventListener('keydown', function (e) {
+els.cheatInput.addEventListener('keydown', function (e) {
       if (e.code === 'Enter') { e.preventDefault(); addCheatFromInput(); }
+    });
+els.btnNetplay.addEventListener('click', toggleNetplayModal);
+    if (els.btnNetplayLanding) els.btnNetplayLanding.addEventListener('click', toggleNetplayModal);
+    els.netplayClose.addEventListener('click', closeNetplayModal);
+    els.netplayModal.addEventListener('click', function (e) {
+      if (e.target === els.netplayModal) closeNetplayModal();
+    });
+els.netplayCreate.addEventListener('click', function () {
+      var url = els.netplayUrl.value.trim();
+      if (!url) { toast('Enter a server URL first', 'error'); return; }
+      try { localStorage.setItem('nesplayer.netplay.url', url); } catch (e) {}
+      if (window.NESNetplay) window.NESNetplay.createRoom(url);
+      else toast('Netplay module not loaded', 'error');
+    });
+    els.netplayJoin.addEventListener('click', function () {
+      var url = els.netplayUrl.value.trim();
+      var code = (els.netplayRoomCode.value || '').trim().toUpperCase();
+      if (!url) { toast('Enter a server URL first', 'error'); return; }
+      if (!code) { toast('Enter a room code to join', 'error'); return; }
+      try { localStorage.setItem('nesplayer.netplay.url', url); } catch (e) {}
+      if (window.NESNetplay) window.NESNetplay.joinRoom(code, url);
+      else toast('Netplay module not loaded', 'error');
+    });
+    els.netplayDisconnect.addEventListener('click', function () {
+      if (window.NESNetplay) window.NESNetplay.disconnect();
     });
     els.btnBind.addEventListener('click', function () { openBindModal(); });
     els.btnCloseModal.addEventListener('click', closeBindModal);
@@ -1957,10 +2208,11 @@ btnDebug: $('btnDebug'),
       }
     });
 
-    setupDnD();
+setupDnD();
     renderRecent();
     setupBindModal();
     initBindings();
+    initNetplay();
 
     // Video filters start OFF (raw pixel-perfect image, original palette).
     els.screenWrap.classList.remove('crt', 'static');

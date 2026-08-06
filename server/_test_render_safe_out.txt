@@ -1,0 +1,2 @@
+Case1 (rendering ROM): frame() ran 5x in 20ms, fpsFrameCount=5 -> RENDERS NORMALLY
+Case2 (no-render ROM): frame() returned 3x in 1ms -> NO HANG (fixed)
