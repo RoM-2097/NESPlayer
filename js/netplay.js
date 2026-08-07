@@ -453,8 +453,14 @@
         role = 'guest';
         active = true;
         setState('waiting');
+        // Guest must create its RTCPeerConnection now so pc.ondatachannel is
+        // registered before the host's SDP offer arrives. Without this, the
+        // host's offer hits `if (!pc) return;` and is dropped, the peer never
+        // establishes, the host freezes waiting for data channels, and the ROM
+        // is never sent.
+        initPeer(false);
         if (GG.onJoined) GG.onJoined(room);
-        // Guest is waiting for the host's offer (host got 'peer-joined').
+        // Guest's pc is ready; it waits for the host's offer (host got 'peer-joined').
       });
     });
   };
