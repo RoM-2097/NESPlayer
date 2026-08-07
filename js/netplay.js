@@ -242,7 +242,8 @@ function finishLatencyProbe() {
     }
     // Tell the guest the agreed delay so BOTH sides lockstep with the same
     // INPUT_DELAY (critical for becomeReady's seed window 0..INPUT_DELAY).
-    send({ type: 'p2p', data: { type: 'probe-done', delay: INPUT_DELAY } });
+send({ type: 'p2p', data: { type: 'probe-done', delay: INPUT_DELAY } });
+    clearSyncWatchdog();   // the handshake finished — disarm the stuck-sync timer
     becomeReady();
     setState('playing');
     if (role === 'host' && cfg.host && cfg.host.onStart) cfg.host.onStart();
@@ -266,6 +267,34 @@ probeDeadline = Date.now() + 1500;
 
 // ---- WebSocket lifecycle ----
   var connectTimer = null;
+  var syncTimer = null;   // watchdog: bails out of a stuck 'syncing' handshake
+
+  // If the peer never completes the ROM-sync handshake (e.g. the guest's ROM
+  // load failed silently, a 'ready'/'probe-done' message was lost, or the
+  // guest closed the tab), the host would otherwise sit on "Syncing ROM…"
+  // forever with no way to recover. This watchdog surfaces a clear error and
+  // disconnects so the local player can retry instead of hanging.
+  var SYNC_TIMEOUT_MS = 10000;
+
+  function startSyncWatchdog() {
+    if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
+    syncTimer = setTimeout(function () {
+      syncTimer = null;
+      if (!romReady && active) {
+        setState('error');
+        toast('Netplay sync timed out — the peer did not join. Disconnected.', 'error');
+        if (cfg.host && cfg.host.onStop) cfg.host.onStop();
+        if (cfg.guest && cfg.guest.onStop) cfg.guest.onStop();
+        if (role === 'host' && cfg.host && cfg.host.nes) cfg.host.nes.running = true;
+        if (role === 'guest' && cfg.guest && cfg.guest.nes) cfg.guest.nes.running = true;
+        GG.disconnect();
+      }
+    }, SYNC_TIMEOUT_MS);
+  }
+
+  function clearSyncWatchdog() {
+    if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
+  }
 
 // Normalize a server URL into a valid absolute WebSocket URL. Accepts
   // "ws://…"/"wss://…" as-is, converts "http(s)://" to ws(s), and prepends
@@ -384,9 +413,10 @@ probeDeadline = Date.now() + 1500;
     if (!data) return;
     if (data.type === 'guest-joined' && role === 'host') {
       // Host sends the ROM now so the guest can bootstrap identically, but
-      // does NOT start playing yet — it waits for the guest's 'ready' ack so
+// does NOT start playing yet — it waits for the guest's 'ready' ack so
       // both sockets are connected and both have the ROM.
       setState('syncing');
+      startSyncWatchdog();   // bail if the guest never finishes the handshake
       // Re-boot the host's emulator to the SAME fresh state the guest will
       // boot into (reloadROM re-parses the ROM with default mapper banks,
       // which matches a fresh loadROM() exactly). Fall back to reset().
@@ -596,6 +626,7 @@ latestPeer = null;
   }
 
 function resetState() {
+    clearSyncWatchdog();   // disarm any pending stuck-sync timer
     active = false;
     role = null;
     player = null;
