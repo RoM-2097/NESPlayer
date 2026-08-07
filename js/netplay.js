@@ -77,13 +77,13 @@ var romReady = false;     // both sides connected + have the ROM; lockstep may r
   // starved to ~25 FPS on hosts like Render's free tier where RTT > 33 ms).
 var INPUT_DELAY = 3;
   var MIN_INPUT_DELAY = 3;
-  var MAX_INPUT_DELAY = 12;   // cap ≈ 200 ms so it never feels too laggy
+  var MAX_INPUT_DELAY = 8;    // cap ≈ 133 ms so it never feels too laggy
   // Extra headroom (ms) added above the WORST-CASE one-way latency when
   // choosing the adaptive delay, plus one extra frame in computeAdaptiveDelay.
   // This guarantees the peer's input for a render frame is always buffered, so
   // GG.step() never returns false and the game stays at a full 60 FPS even on
-  // a jittery cloud connection.
-  var SAFETY_MARGIN_MS = 50;  // 3 frames of headroom over the worst-case one-way
+  // a jittery cloud connection. Kept modest (2 frames) to minimize input lag.
+  var SAFETY_MARGIN_MS = 33;  // 2 frames of headroom over the worst-case one-way
 
   // Runtime latency adaptation. Delay-based netcode renders INPUT_DELAY frames
   // behind the live exchange so the peer's input for a render frame is already
@@ -646,19 +646,14 @@ localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   // this frame's input, publishes it, and selects the peer's buffered input for
   // the render frame.
   //
-  // FRAME RATE (the fix): GG.step() must NEVER return false during normal play.
-  // app.js treats a `false` return as "skip this emulated frame" (`if (!GG.step())
-  // return;`), which drops the whole frame. On a cloud connection where the RTT
-  // exceeds the calibrated input delay, that wait fires every other frame and
-  // halves the game to ~30 FPS. Instead we always advance and, when the peer's
-  // exact input for a render frame hasn't arrived yet (a latency spike), we
-  // PREDICT by holding the peer's most recent real input for that one frame.
-  // Both sides apply the same hold rule from the same peer messages, so the
-  // match stays in lockstep, and the game never drops below 60 FPS.
-  //
-  // If we are force-waiting repeatedly (the peer's input is consistently late),
-  // the HOST grows INPUT_DELAY by 1 and broadcasts the change so both sides
-  // re-buffer with a larger window and return to sustained 60 FPS.
+  // STRICT LOCKSTEP (no prediction): GG.step() only advances a frame once the
+  // peer's REAL input for that render frame has arrived. Both sides therefore
+  // ALWAYS execute byte-identical inputs, so desync is impossible. If the
+  // peer's input hasn't arrived yet (a latency spike), we return false and
+  // app.js skips this emulated frame — the trade-off is a rare dropped frame
+  // instead of a permanent desync. Because the adaptive RTT probe chose an
+  // INPUT_DELAY that covers the connection's latency, these waits are rare and
+  // the game runs at essentially full speed.
   GG.step = function () {
     if (!active || !romReady) return false;
 
@@ -677,19 +672,18 @@ localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
     };
     sendFrameInput(nextFrame);
 
-// 2) Pick the peer's input for the frame we are about to render. Prefer the
-    //    exact frame; if it hasn't arrived yet, PREDICT by holding the peer's
-    //    most recent real input. Never drop the frame — dropping it is what
-    //    halved the game to ~30 FPS.
+    // 2) WAIT for the peer's REAL input for the frame we are about to render.
+    //    Never predict: guessing would let the two cores execute different
+    //    inputs and permanently desync. The adaptive INPUT_DELAY keeps these
+    //    waits rare (only on latency spikes), so the game stays near 60 FPS.
     var renderFrame = nextFrame - INPUT_DELAY;
     var peer = peerInputs[renderFrame];
     if (!peer) {
-      peer = latestPeer;   // hold the peer's last real input for this frame
+      return false; // wait for the real peer input — never guess
     }
     renderPeer = peer;
 
-    // 3) Advance the live + render counters TOGETHER every tick. Both sides
-    //    advance in lockstep at 60 FPS; the adaptive delay absorbs the RTT.
+    // 3) Advance the live + render counters TOGETHER, in lockstep.
     nextFrame++;
     frame = renderFrame;
 
