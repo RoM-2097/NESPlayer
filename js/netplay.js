@@ -320,6 +320,14 @@
           cfg.guest.loadRom(msg.bytes, msg.name);
           sendReliable({ type: 'ready' });
           setState('syncing');
+          // The guest never receives its own 'ready' message (only the host
+          // does), so it must bootstrap its own lockstep state here or it
+          // will stay unready forever: GG.isReady() remains false, the
+          // emulator holds/never renders, and the guest freezes on a black
+          // screen while the host plays.
+          becomeReady();
+          setState('playing');
+          if (cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
         } catch (e) {
           setState('error');
           toast('ROM load failed: ' + e.message, 'error');
