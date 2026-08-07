@@ -35,6 +35,18 @@ packed into a compact binary format (4 bytes/frame).
 - [ ] `README.md`: document the WebRTC + signaling architecture.
 - [ ] Verify: `npm install` in `server/`; `node --check` on JS files.
 
+## Bug fixes (room-join freeze + desync)
+- [x] `js/netplay.js`: guest now calls `initPeer(false)` in `GG.joinRoom` so
+      its `RTCPeerConnection` exists before the host's SDP offer arrives.
+      Previously `handleSdp()` dropped the offer (`if (!pc) return;`), the peer
+      never established, the host froze waiting for data channels, and the ROM
+      was never sent.
+- [x] `js/netplay.js`: `GG.step()` now HOLDS (returns `false`) until the peer's
+      input for the render frame has actually arrived, instead of always
+      returning `true`. This paces the two independent emulator loops to the
+      slower side so the cores advance in deterministic lockstep and no longer
+      drift apart / desync within seconds.
+
 ## Verification
 - [ ] Local test: two browser tabs on `http://localhost:3000` create/join a
       room and stay in lockstep.

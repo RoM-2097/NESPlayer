@@ -545,12 +545,23 @@
     };
     sendFrameInput(nextFrame);
 
-    // 2) Pick the peer's input for the frame we are about to render. If it
-    //    hasn't arrived (UDP loss/jitter), HOLD the most recent peer input so
-    //    the game never stalls. This is the delay-based prediction that lets
-    //    us run at full speed over unreliable transport.
+// 2) The render frame's peer input must already be in flight — we send it
+    //    INPUT_DELAY frames ahead. WAIT for it so both cores ADVANCE IN
+    //    LOCKSTEP. If we rendered whenever the local setTimeout loop fired,
+    //    the two clients' independent loops would drift apart and the cores
+    //    would desync within seconds. Holding here (returning false) paces
+    //    both sides to the slower one while the 2-frame delay buffer absorbs
+    //    network jitter.
     var renderFrame = nextFrame - INPUT_DELAY;
-    renderPeer = peerInputs[renderFrame] || latestPeer || { p1: 0, p2: 0 };
+    var peerIn = peerInputs[renderFrame];
+    if (!peerIn) {
+      // Peer's input for this frame hasn't arrived yet — HOLD (do not advance)
+      // so we stay frame-locked. lastStep is intentionally NOT updated here,
+      // so the stall timeout above still fires if the peer truly vanishes and
+      // we degrade gracefully to single-player.
+      return false;
+    }
+    renderPeer = peerIn;
 
     // 3) Advance counters.
     nextFrame++;
