@@ -301,10 +301,26 @@
     };
   }
 
+// Re-send every buffered local input frame still in the live window. On a
+  // real network the reliable channel (ROM) can open BEFORE the unordered input
+  // channel, so becomeReady()'s seed inputs (frames 0..INPUT_DELAY) may have
+  // been sent while dcInput was still closed and silently dropped. Re-sending
+  // them here, the moment the input channel opens, guarantees the peer has the
+  // full initial window — otherwise the host stalls waiting for the guest's
+  // frame 0 and times out with "Netplay stalled".
+  function resendPendingInputs() {
+    if (!dcInput || dcInput.readyState !== 'open') return;
+    for (var n in localInputs) {
+      sendFrameInput(Number(n));
+    }
+  }
+
   function wireInput() {
     if (!dcInput) return;
     dcInput.onopen = function () {
       maybePeerReady();
+      // Recover any seed inputs dropped before this channel opened.
+      if (romReady) resendPendingInputs();
     };
     dcInput.onmessage = function (e) {
       handleInputBinary(e.data);

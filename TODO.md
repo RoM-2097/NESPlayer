@@ -46,6 +46,14 @@ packed into a compact binary format (4 bytes/frame).
       returning `true`. This paces the two independent emulator loops to the
       slower side so the cores advance in deterministic lockstep and no longer
       drift apart / desync within seconds.
+- [x] `js/netplay.js`: add `resendPendingInputs()` and call it from `wireInput()`'s
+      `onopen`. When the reliable (ROM) channel opens before the unordered input
+      channel on a real network, `becomeReady()`'s seed inputs (frames
+      0..INPUT_DELAY) are silently dropped because `dcInput` isn't open yet. The
+      host then waits forever for the guest's frame-0 input and times out with
+      "Netplay stalled". Re-sending the buffered live window on input-channel
+      open recovers those dropped seeds so the guest always delivers its initial
+      frames.
 
 ## Verification
 - [ ] Local test: two browser tabs on `http://localhost:3000` create/join a
