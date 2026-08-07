@@ -51,9 +51,20 @@ packed into a compact binary format (4 bytes/frame).
       channel on a real network, `becomeReady()`'s seed inputs (frames
       0..INPUT_DELAY) are silently dropped because `dcInput` isn't open yet. The
       host then waits forever for the guest's frame-0 input and times out with
-      "Netplay stalled". Re-sending the buffered live window on input-channel
+"Netplay stalled". Re-sending the buffered live window on input-channel
       open recovers those dropped seeds so the guest always delivers its initial
       frames.
+- [x] `js/netplay.js`: add TURN relay servers (openrelay.metered.ca) to
+      `iceServers` so remote peers behind symmetric NAT / strict firewalls can
+      establish the WebRTC connection via TURN relaying (STUN-only fails when
+      neither side can accept an inbound direct connection, causing "peer
+      connection lost"). Swap in a self-hosted coturn / paid TURN for production.
+- [x] `js/netplay.js`: make ICE candidate handling race-safe. Candidates that
+      arrive before the remote description is set are now buffered in
+      `pendingIce` and flushed from `handleSdp` after the description is applied
+      (previously `addIceCandidate` threw InvalidStateError and the connection
+      could never establish). Also added `.catch()` to the `addIceCandidate`
+      promise so rejections log instead of silently dropping.
 
 ## Verification
 - [ ] Local test: two browser tabs on `http://localhost:3000` create/join a

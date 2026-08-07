@@ -86,8 +86,14 @@
   var latestPeer = null;    // most recent peer input (prediction fallback)
   var renderPeer = null;    // peer input to apply on the current render frame
 
-  var STALL_TIMEOUT = 3000;
+var STALL_TIMEOUT = 3000;
   var lastStep = 0;
+
+  // ICE candidates received before the remote description is set must be
+  // buffered and flushed afterwards, otherwise addIceCandidate() throws
+  // InvalidStateError and the connection can never establish. This matters
+  // on real networks where candidates can arrive before the SDP offer/answer.
+  var pendingIce = [];
 
   // ---- Connection-establishment helpers ----
 
@@ -214,6 +220,31 @@
     }
   }
 
+function flushPendingIce() {
+    var queued = pendingIce;
+    pendingIce = [];
+    for (var i = 0; i < queued.length; i++) {
+      addIceCandidate(queued[i]);
+    }
+  }
+
+  function addIceCandidate(candidate) {
+    if (!pc) return;
+    // If the remote description hasn't been set yet, addIceCandidate() throws
+    // InvalidStateError. Buffer it and flush after the description is applied.
+    if (!pc.remoteDescription) {
+      pendingIce.push(candidate);
+      return;
+    }
+    try {
+      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function (e) {
+        console.warn('[nesplayer] ICE candidate rejected:', e);
+      });
+    } catch (e) {
+      console.warn('[nesplayer] ICE candidate error:', e);
+    }
+  }
+
   function handleSdp(from, data) {
     if (!pc) return;
     var desc = new RTCSessionDescription(data.sdp);
@@ -225,6 +256,10 @@
           if (socket && socket.connected) socket.emit('signal', { sdp: pc.localDescription });
         });
       }
+    }).then(function () {
+      // Remote description is now set (offer or answer) — apply any ICE
+      // candidates that arrived before it.
+      flushPendingIce();
     }).catch(function (e) {
       console.error('[nesplayer] SDP error:', e);
       setState('error');
@@ -234,20 +269,23 @@
 
   function handleIce(from, candidate) {
     if (!pc) return;
-    try {
-      pc.addIceCandidate(new RTCIceCandidate(candidate));
-    } catch (e) {
-      console.warn('[nesplayer] ICE candidate rejected:', e);
-    }
+    addIceCandidate(candidate);
   }
 
   // ---- WebRTC peer connection ----
 
-  function initPeer(offerer) {
+function initPeer(offerer) {
     var cfgRTC = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        // TURN relay so the peer can connect even when both sides are behind
+        // symmetric NATs / strict firewalls where STUN alone cannot establish
+        // a direct P2P path. Free/open relay is fine for validating the fix;
+        // for production use a self-hosted coturn or a paid TURN provider.
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
       ]
     };
     pc = new RTCPeerConnection(cfgRTC);
@@ -518,8 +556,9 @@
     nextFrame = 0;
     localInputs = {};
     peerInputs = {};
-    latestPeer = null;
+latestPeer = null;
     renderPeer = null;
+    pendingIce = [];
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   }
 
