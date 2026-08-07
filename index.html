@@ -35,10 +35,10 @@
         <a id="btnBuyMeACoffeeNav" class="btn btn--bmac nav-bmac" href="https://buymeacoffee.com/RoM2097" target="_blank" rel="noopener" title="Buy me a coffee!">
           <span class="bmac-ico">☕</span><span>Buy me a coffee</span>
         </a>
-        <button id="btnNetplayLanding" class="btn btn--ghost btn--small nav-netplay" type="button" title="Two-player netplay (WebSocket)">
+<button id="btnNetplayLanding" class="btn btn--ghost btn--small nav-netplay" type="button" title="Two-player netplay (WebRTC peer-to-peer)">
           🌐 Netplay
         </button>
-<div class="nav__badge" id="versionBadge">v2.10</div>
+<div class="nav__badge" id="versionBadge">v2.11</div>
 
       </div>
 
@@ -179,7 +179,7 @@
             <span class="tool-bind-icon">⌨</span><span class="tool-label">Bind</span>
           </button>
 
-<button id="btnNetplay" class="btn btn--tool" type="button" title="Two-player netplay (WebSocket)">
+<button id="btnNetplay" class="btn btn--tool" type="button" title="Two-player netplay (WebRTC peer-to-peer)">
             <span class="tool-netplay-icon">🌐</span><span class="tool-label">Netplay</span>
           </button>
           <button id="btnRecord" class="btn btn--tool" type="button" title="Record gameplay video">
@@ -398,10 +398,10 @@ loop:
         sent automatically. Both players run the same emulator in lockstep. Player 1 = host, Player 2 = guest.
       </p>
 
-      <div class="netplay-server">
-        <label class="netplay-label" for="netplayUrl">Server URL</label>
+<div class="netplay-server">
+        <label class="netplay-label" for="netplayUrl">Signaling server URL</label>
         <input id="netplayUrl" class="netplay-input" type="text" spellcheck="false"
-               placeholder="ws://localhost:3000" aria-label="Netplay server URL" />
+               placeholder="http://localhost:3000" aria-label="Netplay signaling server URL" />
       </div>
 
       <div class="netplay-actions">
@@ -451,9 +451,10 @@ loop:
   <input id="romInput" type="file" accept=".nes,.fds,.unf,application/octet-stream" hidden />
 
 <script src="js/neslib/jsnes.min.js?v=20240916.01"></script>
+  <script src="js/neslib/socket.io.min.js?v=1"></script>
   <script src="js/asm6502.js?v=20240916.01"></script>
   <script src="js/debugger.js?v=20240916.01"></script>
-<script src="js/netplay.js?v=20240916.11"></script>
+<script src="js/netplay.js?v=20240916.12"></script>
 <script src="js/app.js?v=20240916.09"></script>
 
 

@@ -1,17 +1,1 @@
-{
-  "name": "nesplayer",
-  "version": "2.10.0",
-  "description": "Nova NESPLAYER — a browser-based NES emulator with two-player netplay (WebSocket relay + static host).",
-  "main": "server/relay.js",
-  "scripts": {
-    "start": "node server/relay.js",
-    "test": "node server/_test_live_determinism.js"
-  },
-  "engines": {
-    "node": ">=16"
-  },
-  "dependencies": {
-    "ws": "^8.18.0"
-  },
-  "license": "MIT"
-}
+{"name":"nesplayer","version":"2.11.0","description":"Nova NESPLAYER — a browser-based NES emulator with two-player WebRTC netplay (peer-to-peer data channels + Socket.io signaling host).","main":"server/signal.js","scripts":{"start":"node server/signal.js","relay":"node server/relay.js","test":"node server/_test_live_determinism.js"},"engines":{"node":">=16"},"dependencies":{"socket.io":"^4.8.3","ws":"^8.18.0"},"license":"MIT"}

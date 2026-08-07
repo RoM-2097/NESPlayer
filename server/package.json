@@ -1,15 +1,1 @@
-{
-  "name": "nesplayer-netplay-relay",
-  "version": "1.0.0",
-  "description": "NESPLAYER WebSocket netplay relay + static host",
-  "main": "relay.js",
-  "scripts": {
-    "start": "node relay.js"
-  },
-  "dependencies": {
-    "ws": "^8.18.0"
-  },
-  "engines": {
-    "node": ">=16"
-  }
-}
+{"name":"nesplayer-netplay-signal","version":"2.0.0","description":"NESPLAYER WebRTC signaling server (Socket.io) + static host. Exchanges SDP/ICE so peers connect directly peer-to-peer; game data never touches this server.","main":"signal.js","scripts":{"start":"node signal.js","relay":"node relay.js"},"dependencies":{"socket.io":"^4.8.3","ws":"^8.18.0"},"engines":{"node":">=16"}}

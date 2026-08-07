@@ -1,5 +1,6 @@
-# Fly.io configuration — deploy NESPLAYER (static host + WebSocket relay).
-# Fly provides HTTPS/TLS and wires the PORT env var automatically.
+# Fly.io configuration — deploy NESPLAYER (static host + WebRTC signaling).
+# Fly provides HTTPS/TLS and wires the PORT env var automatically. The
+# Socket.io server only brokers SDP/ICE; gameplay is peer-to-peer via WebRTC.
 app = "nesplayer"
 primary_region = "iad"
 
@@ -18,4 +19,4 @@ primary_region = "iad"
   processes = ["app"]
 
 [processes]
-  app = "node server/relay.js"
+  app = "node server/signal.js"

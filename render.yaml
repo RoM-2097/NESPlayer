@@ -1,6 +1,7 @@
-# Render blueprint — deploy NESPLAYER (static host + WebSocket relay) to the
-# Render free/starter tier in one click. Render sets PORT automatically and
-# provides HTTPS, so netplay upgrades to wss:// on the same origin.
+# Render blueprint — deploy NESPLAYER (static host + WebRTC signaling).
+# Render sets PORT automatically and provides HTTPS. The Socket.io signaling
+# server only brokers SDP/ICE to establish the peer-to-peer WebRTC connection;
+# all gameplay flows directly between the two browsers.
 services:
   - type: web
     name: nesplayer

@@ -11,16 +11,29 @@
 ## Hosting / Deploy
 
 Single-player works 100% client-side and can be served from any static host.
-**Two-player netplay needs the WebSocket relay** in `server/relay.js`, which
-also serves the static app — so one Node process hosts everything. Because the
-page and the WebSocket share one origin, netplay automatically uses `wss://`
-on HTTPS.
+**Two-player netplay uses WebRTC peer-to-peer data channels.** The only thing
+the server does is broker the connection — a lightweight **Socket.io signaling
+server** (`server/signal.js`) exchanges SDP offers/answers + ICE candidates
+between the two players, then steps out of the way. All gameplay traffic flows
+directly between the two browsers over **UDP** (`RTCDataChannel` with
+`ordered:false`), avoiding TCP head-of-line blocking that would desync a
+real-time game.
+
+`server/signal.js` also serves the static app, so one Node process hosts
+everything. Because the page and the signaling server share one origin, the
+client auto-detects the URL from `location.host` (using `https://` on HTTPS).
 
 ### Option A — Full experience (netplay) via a Node host
 
 The repo is pre-configured for [Render](https://render.com), [Railway](https://railway.app),
 [Glitch](https://glitch.com), and [Fly.io](https://fly.io). All of them set the
 `PORT` env var automatically (the server reads `process.env.PORT || 3000`).
+
+> **Note (WebRTC & NAT):** WebRTC uses STUN to discover public candidates. The
+> built-in config uses Google's public STUN servers (`stun.l.google.com:19302`).
+> If two players are behind restrictive symmetric NATs, a **TURN** server is
+> needed to relay media/data. For a hobby deployment, symmetric NAT is
+> uncommon on home connections, so direct peer-to-peer usually "just works".
 
 **Render (recommended, free tier):**
 1. Push this repo to GitHub/GitLab.
@@ -44,7 +57,7 @@ fly launch      # uses fly.toml
 fly deploy
 ```
 
-To run locally (same-origin WS + static serving):
+To run locally (same-origin signaling + static serving):
 ```bash
 npm install
 npm start       # serves on http://localhost:3000
@@ -55,7 +68,7 @@ the server.
 ### Option B — Static-only (single-player, no netplay)
 
 Deploy `index.html`, `css/`, and `js/` to GitHub Pages, Netlify, Vercel, or
-Cloudflare Pages. Everything works except the 🌐 Netplay button (no WebSocket
+Cloudflare Pages. Everything works except the 🌐 Netplay button (no signaling
 endpoint is available).
 
 ## Controls
@@ -203,12 +216,14 @@ NESPLAYER/
 │   ├── app.js          # Emulator logic, UI, input handling
 │   ├── asm6502.js      # 6502 assembler & disassembler library
 │   ├── debugger.js     # CPU debugger: registers, disasm, hex editor, assembler
-│   ├── netplay.js      # Two-player netplay (delay-based lockstep)
+│   ├── netplay.js      # Two-player netplay (WebRTC peer-to-peer, delay-based)
 │   └── neslib/
-│       └── jsnes.min.js # Vendored NES emulator core
+│       ├── jsnes.min.js # Vendored NES emulator core
+│       └── socket.io.min.js # Vendored Socket.io client (signaling)
 ├── server/
-│   └── relay.js        # Static host + WebSocket netplay relay (Node)
-├── package.json        # Node app entry: `npm start` → server/relay.js
+│   ├── signal.js       # Static host + WebRTC signaling broker (Node)
+│   └── relay.js        # Legacy WebSocket netplay relay (Node, optional)
+├── package.json        # Node app entry: `npm start` → server/signal.js
 ├── Procfile            # Render / Heroku web process
 ├── render.yaml         # Render blueprint (free-tier, /health probe)
 ├── fly.toml            # Fly.io config (optional alt platform)
