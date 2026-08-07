@@ -1315,16 +1315,46 @@ function closeCheatModal() {
     else openNetplayModal();
   }
 
+// Derive the netplay WebSocket URL from the current page so it matches the
+  // origin that is serving the app. On an HTTPS page (Render, Railway, etc.)
+  // this yields `wss://<host>` — a plaintext `ws://` from a secure page is
+  // blocked by the browser with "The operation is insecure". On a local
+  // http://localhost page it yields `ws://localhost:PORT`.
+  function defaultNetplayUrl() {
+    if (typeof location !== 'undefined' && location && location.protocol) {
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var host = location.host || 'localhost:3000';
+      return proto + '//' + host;
+    }
+    return 'ws://localhost:3000';
+  }
+
+// Upgrade a saved `ws://` server URL to `wss://` when the page is served
+  // over HTTPS (a plaintext ws:// from a secure page is blocked by the browser
+  // with "The operation is insecure"). Hosts like Render/Railway always serve
+  // HTTPS, so any URL a user saved while testing locally must be upgraded.
+  function normalizeNetplayUrl(url) {
+    if (!url) return '';
+    var u = String(url).trim();
+    if (typeof location !== 'undefined' && location && location.protocol === 'https:' &&
+        /^ws:\/\//i.test(u)) {
+      return 'wss://' + u.replace(/^ws:\/\//i, '');
+    }
+    return u;
+  }
+
   function openNetplayModal() {
     netplayModalOpen = true;
     els.netplayModal.hidden = false;
     document.body.classList.add('no-scroll');
-    // Restore a previously used server URL (or default to localhost).
+    // Restore a previously used server URL (upgrading ws:// -> wss:// on
+    // HTTPS), or default to the page's own origin so wss:// is used
+    // automatically on HTTPS hosts.
     try {
       var savedUrl = localStorage.getItem('nesplayer.netplay.url');
-      if (savedUrl) els.netplayUrl.value = savedUrl;
+      if (savedUrl) els.netplayUrl.value = normalizeNetplayUrl(savedUrl);
     } catch (e) {}
-    if (!els.netplayUrl.value) els.netplayUrl.value = 'ws://localhost:3000';
+    if (!els.netplayUrl.value) els.netplayUrl.value = defaultNetplayUrl();
   }
 
   function closeNetplayModal() {

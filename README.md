@@ -214,7 +214,15 @@ NESPLAYER/
 │   ├── app.js          # Emulator logic, UI, input handling
 │   ├── asm6502.js      # 6502 assembler & disassembler library
 │   ├── debugger.js     # CPU debugger: registers, disasm, hex editor, assembler
+│   ├── netplay.js      # Two-player netplay (delay-based lockstep)
 │   └── neslib/
 │       └── jsnes.min.js # Vendored NES emulator core
+├── server/
+│   └── relay.js        # Static host + WebSocket netplay relay (Node)
+├── package.json        # Node app entry: `npm start` → server/relay.js
+├── Procfile            # Render / Heroku web process
+├── render.yaml         # Render blueprint (free-tier, /health probe)
+├── fly.toml            # Fly.io config (optional alt platform)
+├── .gitignore
 ├── README.md
 └── TODO.md

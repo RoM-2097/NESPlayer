@@ -13,7 +13,9 @@ the netplay WebSocket relay share one origin (page + `wss://` on the same host).
 - [x] fly.toml: Fly.io config (internal port 3000, HTTPS, auto-stop).
 - [x] .gitignore: Ignore `node_modules`, logs, and test artifacts.
 - [x] README.md: Add a "Hosting / Deploy" section covering static-only vs full netplay (Render/Railway/Glitch/Fly).
-- [x] Verify: `node server/relay.js` boots; `/health` returns `{"ok":true,"rooms":0}`; `/` serves the app.
+- [x] js/netplay.js: WebSocket security fix — `normalizeWsUrl()` now upgrades `ws://` → `wss://` (and defaults bare host URLs to `wss://`) when the page is served over HTTPS, so netplay works on https-only hosts (Render/Fly) instead of being blocked as insecure mixed content.
+- [x] index.html: Bump cache-bust versions on `style.css` (+.05) and `netplay.js` (+.11).
+- [x] Verify: `node server/relay.js` boots; `/health` returns `{"ok":true,"rooms":0}`; `/` serves the app; adaptive-delay probe test reaches frame 61 in lockstep on both sides.
 
 ## Local test
 ```
