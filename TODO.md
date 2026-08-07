@@ -65,6 +65,14 @@ packed into a compact binary format (4 bytes/frame).
       (previously `addIceCandidate` threw InvalidStateError and the connection
       could never establish). Also added `.catch()` to the `addIceCandidate`
       promise so rejections log instead of silently dropping.
+- [x] `js/netplay.js`: make the ICE connection-state handler robust. The old
+      handler tore down the session on `disconnected`, but `disconnected` is
+      TRANSIENT during real-network negotiation (especially over TURN) and
+      would kill the connection right as it established. Now only `failed`
+      (after an 8s grace window + one `restartIce()` attempt) and `closed`
+      tear down; `connected`/`completed` clear the failure timer. Also moved
+      the handler into a module-level context so `iceFailTimer` is tracked and
+      reset cleanly.
 
 ## Verification
 - [ ] Local test: two browser tabs on `http://localhost:3000` create/join a

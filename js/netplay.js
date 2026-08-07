@@ -93,7 +93,8 @@ var STALL_TIMEOUT = 3000;
   // buffered and flushed afterwards, otherwise addIceCandidate() throws
   // InvalidStateError and the connection can never establish. This matters
   // on real networks where candidates can arrive before the SDP offer/answer.
-  var pendingIce = [];
+var pendingIce = [];
+  var iceFailTimer = null;
 
   // ---- Connection-establishment helpers ----
 
@@ -295,8 +296,39 @@ function initPeer(offerer) {
         socket.emit('signal', { candidate: e.candidate });
       }
     };
-    pc.oniceconnectionstatechange = function () {
-      if (pc && (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected')) {
+pc.oniceconnectionstatechange = function () {
+      if (!pc) return;
+      var st = pc.iceConnectionState;
+      if (st === 'connected' || st === 'completed') {
+        // ICE succeeded — clear any pending failure timer.
+        iceFailTimer = null;
+        return;
+      }
+      if (st === 'disconnected' || st === 'checking') {
+        // 'disconnected' is TRANSIENT and recoverable — it commonly flickers
+        // during real-network negotiation (especially over a TURN relay with
+        // higher latency) before reaching 'connected'. Do NOT tear down here;
+        // that would kill the connection right as it establishes.
+        return;
+      }
+      if (st === 'failed') {
+        // Definitive failure. Give the connection one ICE-restart attempt and
+        // a short grace window before declaring the session lost.
+        if (!iceFailTimer) {
+          iceFailTimer = setTimeout(function () {
+            iceFailTimer = null;
+            endSession('Peer connection lost', true);
+          }, 8000);
+          try {
+            // Ask the browser to restart ICE with fresh candidates rather than
+            // giving up immediately — helps when a candidate pair was rejected.
+            if (pc && typeof pc.restartIce === 'function') pc.restartIce();
+          } catch (e) { /* ignore */ }
+        }
+        return;
+      }
+      // 'closed' / other terminal states: tear down.
+      if (st === 'closed') {
         endSession('Peer connection lost', true);
       }
     };
@@ -559,6 +591,7 @@ function initPeer(offerer) {
 latestPeer = null;
     renderPeer = null;
     pendingIce = [];
+    iceFailTimer = null;
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   }
 
