@@ -1,0 +1,18 @@
+{
+  "name": "nesplayer",
+  "version": "2.10.0",
+  "description": "Nova · NESPLAYER — a modern browser-based NES emulator with two-player netplay. Single Node process serves the static app and relays WebSockets for netplay.",
+  "main": "server/relay.js",
+  "scripts": {
+    "start": "node server/relay.js",
+    "dev": "node server/relay.js",
+    "test": "node --check server/relay.js && node --check js/netplay.js && node --check js/app.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}

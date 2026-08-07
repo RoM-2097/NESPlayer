@@ -1,3 +1,28 @@
+# NESPLAYER — Hosting / Deploy setup
+
+## Goal
+Make NESPLAYER trivially deployable as a Node web service so the static app and
+the netplay WebSocket relay share one origin (page + `wss://` on the same host).
+
+## Tasks
+- [x] index.html: Add a "☕ Buy me a coffee" button (buymeacoffee.com/RoM2097) in the nav and footer.
+- [x] css/style.css: Add official yellow `.btn--bmac` button styling + nav/footer placement.
+- [x] package.json (root): Add `"start": "node server/relay.js"`, the `ws` dependency, and `engines.node >= 16` so Node hosts (Render/Railway/Glitch/Fly) detect and run the app.
+- [x] Procfile: `web: npm start` for Render/Heroku push-to-deploy.
+- [x] render.yaml: Render blueprint (free-tier web service, `/health` probe).
+- [x] fly.toml: Fly.io config (internal port 3000, HTTPS, auto-stop).
+- [x] .gitignore: Ignore `node_modules`, logs, and test artifacts.
+- [x] README.md: Add a "Hosting / Deploy" section covering static-only vs full netplay (Render/Railway/Glitch/Fly).
+- [x] Verify: `node server/relay.js` boots; `/health` returns `{"ok":true,"rooms":0}`; `/` serves the app.
+
+## Local test
+```
+npm install
+npm start        # http://localhost:3000
+```
+
+---
+
 # NESPLAYER — Netplay desync after a while (delay-based input bug)
 
 ## Diagnosis (final)

@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test / runtime artifacts
+server/_test_*.txt
+server/*_out*.txt
+server/.scripts/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

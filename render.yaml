@@ -1,0 +1,14 @@
+# Render blueprint — deploy NESPLAYER (static host + netplay relay) with one click.
+# Push this repo to GitHub and create a Blueprint from the Render dashboard,
+# or use the "New > Blueprint" flow pointing at this repo.
+services:
+  - type: web
+    name: nesplayer
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20

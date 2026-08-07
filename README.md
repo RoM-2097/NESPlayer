@@ -8,6 +8,67 @@
 2. **Load a ROM** — click the "Browse" button or drag-and-drop a `.nes` file onto the landing zone.
 3. **Play!**
 
+## Hosting / Deploy
+
+NESPLAYER is a **pure client-side app**: single-player play needs no server at all —
+just serve `index.html`, `css/`, and `js/` from any static host (GitHub Pages,
+Netlify, Vercel, Cloudflare Pages…). The **two-player netplay** feature, however,
+needs the WebSocket relay in `server/relay.js`, which also serves the static files
+so the page and the socket share one origin. A single Node process runs everything.
+
+### Option A — Static-only (no netplay)
+
+Upload these to any static host:
+
+```
+index.html
+css/
+js/
+```
+
+Open the site and play. Netplay buttons will not connect (there is no relay).
+
+### Option B — Full experience with netplay (recommended)
+
+The repo is already configured as a Node app. Push it to **Render**, **Railway**,
+**Glitch**, or **Fly.io** and it just works — the relay serves the page and the
+WebSocket on the same origin, and `js/netplay.js` auto-detects the URL
+(`wss://` on HTTPS).
+
+**Local development:**
+
+```bash
+npm install          # installs `ws` (also run in server/ if needed)
+npm start            # serves the app + netplay relay on http://localhost:3000
+```
+
+**Render (free tier):**
+1. Push this repo to GitHub.
+2. In the Render dashboard choose **New → Blueprint** (or **New → Web Service**).
+3. Point it at the repo. Render auto-detects `render.yaml` (or you can set
+   *Build Command* `npm install` and *Start Command* `npm start`).
+4. Deploy. You get a `https://…onrender.com` URL; share it — netplay works
+   out of the box.
+
+**Railway:**
+1. In Railway create a **New Project → Deploy from GitHub repo**.
+2. Railway auto-detects the root `package.json` and runs `npm start`.
+3. Set the `PORT` env var if needed (Railway injects it automatically).
+
+**Glitch:**
+1. **New project → Import from GitHub**, paste the repo URL.
+2. Glitch runs the `start` script and supplies `PORT`. Netplay works on the
+   generated `https://…glitch.me` URL.
+
+**Fly.io (optional):**
+```bash
+fly launch   # in the repo root — uses fly.toml settings
+fly deploy
+```
+
+All platforms provide HTTPS, so the client automatically uses `wss://` for
+netplay. No extra configuration is required.
+
 ## Controls
 
 ### Keyboard
