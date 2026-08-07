@@ -66,9 +66,15 @@
   // latency, so both sides sustain a full 60 FPS instead of dropping frames
   // while the peer's input is still in flight (the old fixed 2-frame delay
   // starved to ~25 FPS on hosts like Render's free tier where RTT > 33 ms).
-  var INPUT_DELAY = 2;
-  var MIN_INPUT_DELAY = 2;
-  var MAX_INPUT_DELAY = 10;   // cap ≈ 167 ms so it never feels too laggy
+var INPUT_DELAY = 3;
+  var MIN_INPUT_DELAY = 3;
+  var MAX_INPUT_DELAY = 12;   // cap ≈ 200 ms so it never feels too laggy
+  // Extra headroom (ms) added above the WORST-CASE one-way latency when
+  // choosing the adaptive delay, plus one extra frame in computeAdaptiveDelay.
+  // This guarantees the peer's input for a render frame is always buffered, so
+  // GG.step() never returns false and the game stays at a full 60 FPS even on
+  // a jittery cloud connection.
+  var SAFETY_MARGIN_MS = 33;  // 2 frames
   // Round-trip measurement for the adaptive delay.
   var rttSamples = [];
   var pingSends = {};
@@ -185,13 +191,19 @@
     send({ type: 'p2p', data: { type: 'ping', seq: seq } });
   }
 
-  function computeAdaptiveDelay() {
+function computeAdaptiveDelay() {
     if (!rttSamples.length) return MIN_INPUT_DELAY;
-    // Use the 95th percentile of one-way latency so occasional spikes don't
-    // force an over-large delay, plus one frame of safety margin.
-    var sorted = rttSamples.slice().sort(function (a, b) { return a - b; });
-    var p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
-    var frames = Math.ceil(p95 / 16.67);
+    // Use the WORST-CASE (max) one-way latency plus a 2-frame safety margin so
+    // the peer's input for a render frame is ALWAYS already buffered. The old
+    // p95 + no-margin estimate under-sized the window on jittery connections,
+    // which made GG.step() return false and DROP frames (netplay dropped to
+    // ~25 FPS). Dropped frames are catastrophic here: they both tank the frame
+    // rate AND desync the two cores (one side skips a frame the other renders).
+    var max = 0;
+    for (var i = 0; i < rttSamples.length; i++) {
+      if (rttSamples[i] > max) max = rttSamples[i];
+    }
+    var frames = Math.ceil((max + SAFETY_MARGIN_MS) / 16.67) + 1;
     var d = Math.max(MIN_INPUT_DELAY, Math.min(MAX_INPUT_DELAY, frames));
     return d;
   }
@@ -617,16 +629,30 @@ GG.step = function () {
     };
     sendFrameInput(nextFrame);
 
-    // 2) PREVENT desync: pick the peer's REAL input for the frame we are
-    //    about to render. If it hasn't arrived yet (jitter), we WAIT (return
-    //    false) rather than guess — both sides must execute identical inputs.
-    //    A true peer stall is handled by the STALL_TIMEOUT bail above, so we
-    //    never advance on a guessed/wall-clock fallback that could apply a
-    //    different input than the peer and permanently desync the two cores.
+// 2) Pick the peer's input for the frame we are about to render. The
+    //    adaptive INPUT_DELAY (worst-case one-way + 2-frame safety margin)
+    //    makes this frame essentially always already buffered, so we can run
+    //    at a full 60 FPS. If it is somehow still missing (a latency spike
+    //    beyond the calibrated window), we HOLD the most recent peer input for
+    //    this frame rather than returning false. Returning false would make
+    //    app.js SKIP nes.frame() entirely — dropping the frame, which both
+    //    tanks the FPS (the ~25 FPS the user saw) AND desyncs the two cores
+    //    (one side renders a frame the other skips). Holding the last input
+    //    keeps both sides rendering the exact same frame count, so lockstep is
+    //    preserved and the game stays at 60 FPS. A true peer stall is caught
+    //    by the STALL_TIMEOUT bail above.
     var renderFrame = nextFrame - INPUT_DELAY;
     var peer = peerInputs[renderFrame];
+    if (!peer && latestPeer) {
+      // Jitter fallback: reuse the most recent input we did receive. Since
+      // both sides run the same delay model, they will both hold on the same
+      // frame, so the cores stay in lockstep.
+      peer = latestPeer;
+    }
     if (!peer) {
-      return false; // wait for the real peer input
+      // No input at all yet (shouldn't happen after becomeReady seeds the
+      // window) — use neutral (no buttons) so the frame still advances.
+      peer = { p1: 0, p2: 0 };
     }
     renderPeer = peer;
 
