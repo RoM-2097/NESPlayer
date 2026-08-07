@@ -9,7 +9,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Press+Start+2P&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="css/style.css?v=20240916.02" />
+<link rel="stylesheet" href="css/style.css?v=20240916.04" />
+
 
 
 </head>
@@ -224,37 +225,18 @@
         </div>
       </div>
 
-      <!-- Side panel: controls reference -->
+<!-- Side panel: chat + live input + ROM info -->
       <aside class="side">
-        <section class="panel">
-          <h3 class="panel__title">⌨️ Keyboard</h3>
-          <ul class="keygrid">
-            <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>D-Pad</span></li>
-            <li><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span>D-Pad</span></li>
-            <li><kbd>X</kbd><span>A (Jump)</span></li>
-            <li><kbd>Z</kbd><span>B (Fire)</span></li>
-            <li><kbd>Shift</kbd><span>Select</span></li>
-            <li><kbd>Enter</kbd><span>Start</span></li>
-            <li><kbd>P</kbd><span>Pause</span></li>
-            <li><kbd>F</kbd><span>Fullscreen</span></li>
-            <li><kbd>⌫</kbd><span>Hold to Rewind</span></li>
-            <li><kbd>G</kbd><span>Open Debugger</span></li>
-            <li><kbd>C</kbd><span>Open Cheats</span></li>
-          </ul>
-
-        </section>
-        <section class="panel">
-          <h3 class="panel__title">🎮 Gamepad</h3>
-          <ul class="keygrid">
-            <li><span class="pad-pill">D-Pad</span><span>Move</span></li>
-            <li><span class="pad-pill">L-Stick</span><span>Move</span></li>
-            <li><span class="pad-pill pad-pill--a">A</span><span>A (Jump)</span></li>
-            <li><span class="pad-pill pad-pill--b">B</span><span>B (Fire)</span></li>
-            <li><span class="pad-pill">Back</span><span>Select</span></li>
-            <li><span class="pad-pill">Start</span><span>Start</span></li>
-            <li><span class="pad-pill">RT</span><span>Hold to Rewind</span></li>
-          </ul>
-          <p class="panel__note">X / Y / triggers are free to remap. Open <strong>Bind</strong> to customize every button.</p>
+        <section class="panel panel--chat">
+          <h3 class="panel__title">💬 Chat</h3>
+          <div id="netplayChat" class="netplay-chat__log netplay-chat-messages netplay-chat__log--side" aria-live="polite">
+            <p class="netplay-chat__empty">No messages yet.</p>
+          </div>
+          <div class="netplay-chat__row">
+            <input id="netplayChatInput" class="netplay-input netplay-chat__input" type="text"
+                   spellcheck="false" maxlength="500" placeholder="Message the other player…" aria-label="Chat message" />
+            <button id="netplayChatSend" class="btn btn--ghost btn--small" type="button">Send</button>
+          </div>
         </section>
         <section class="panel panel--input">
           <h3 class="panel__title">🕹️ Live Input</h3>
@@ -428,7 +410,7 @@ loop:
 
       <div id="netplayStatus" class="netplay-status" aria-live="polite">Not connected.</div>
 
-      <div class="netplay-room" id="netplayRoomBox" hidden>
+<div class="netplay-room" id="netplayRoomBox" hidden>
         <span class="netplay-room-label">Room code</span>
         <span id="netplayRoomCodeDisplay" class="netplay-room-code">····</span>
       </div>
@@ -465,8 +447,8 @@ loop:
 <script src="js/neslib/jsnes.min.js?v=20240916.01"></script>
   <script src="js/asm6502.js?v=20240916.01"></script>
   <script src="js/debugger.js?v=20240916.01"></script>
-<script src="js/netplay.js?v=20240916.08"></script>
-<script src="js/app.js?v=20240916.07"></script>
+<script src="js/netplay.js?v=20240916.09"></script>
+<script src="js/app.js?v=20240916.08"></script>
 
 
 </body>

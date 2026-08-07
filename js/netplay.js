@@ -76,7 +76,7 @@
   var STALL_TIMEOUT = 3000;
   var lastStep = 0;         // last time we ADVANCED a frame (ms)
 
-  // ---- Emulator-core hardening ----
+// ---- Emulator-core hardening ----
   // The vendored jsnes.min.js core calls `this.nes.stop()` when the CPU hits an
   // ILLEGAL 6502 opcode, but this build never defines a `stop()` method. That
   // makes frame() throw `TypeError: this.nes.stop is not a function`. Polyfill
@@ -160,10 +160,31 @@
     });
   }
 
-  // ---- WebSocket lifecycle ----
+// ---- WebSocket lifecycle ----
   var connectTimer = null;
 
+  // Normalize a server URL into a valid absolute WebSocket URL. Accepts
+  // "ws://…"/"wss://…" as-is, converts "http(s)://" to ws(s), and prepends
+  // "ws://" to a bare host:port (e.g. "localhost:3000"). Without this, a
+  // malformed URL makes `new WebSocket()` throw "an invalid or illegal string
+  // was specified".
+  function normalizeWsUrl(url) {
+    if (!url) return '';
+    var u = String(url).trim();
+    if (!u) return '';
+    if (u.indexOf('ws://') === 0 || u.indexOf('wss://') === 0) return u;
+    if (u.indexOf('http://') === 0) return 'ws://' + u.slice(7);
+    if (u.indexOf('https://') === 0) return 'wss://' + u.slice(8);
+    return 'ws://' + u;
+  }
+
   function connect(url, onOpen) {
+    url = normalizeWsUrl(url);
+    if (!url) {
+      setState('error');
+      toast('Enter a valid server URL (e.g. ws://localhost:3000)', 'error');
+      return;
+    }
     if (ws) { try { ws.close(); } catch (e) {} }
     if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
     setState('connecting');
@@ -303,6 +324,10 @@
       onPeerInput(data);
       return;
     }
+if (data.type === 'chat') {
+      if (GG.onChat) GG.onChat(data.from === 'me' ? 'me' : 'peer', data.text || '');
+      return;
+    }
     if (data.type === 'peer-left') {
       setState('ended');
       toast('Player disconnected', 'error');
@@ -331,19 +356,28 @@
   // Transition into the "playing" state once both sides are connected and
   // have the ROM. Called by both host (on guest 'ready') and guest (on host
   // ack-back). Seeds the render/live counters so the delay model starts clean.
-  function becomeReady() {
+function becomeReady() {
     romReady = true;
     frame = 0;
     nextFrame = INPUT_DELAY;
     localInputs = {};
-    peerInputs = {};
-    latestPeer = null;
+    // NOTE: do NOT clear peerInputs here. The peer's seed frames (0..INPUT_DELAY)
+    // may already have arrived while we were still in 'syncing' — clearing them
+    // would make us wait forever for input we already received. resetState()
+    // cleared peerInputs at session start, so any frames present now are the
+    // peer's legitimate initial inputs and must be preserved.
+latestPeer = null;
     renderPeer = null;
     lastStep = Date.now();
-    // Seed our own buffered inputs for the delay window (all-zero start), so
-    // the first frames can render immediately without waiting on the network.
+    // Seed our own buffered inputs for the delay window (all-zero start) AND
+    // TRANSMIT them immediately. GG.step() starts rendering at
+    // renderFrame = nextFrame - INPUT_DELAY = 0, so the peer MUST have our
+    // input for frames 0..INPUT_DELAY buffered — otherwise those frames would
+    // never be sent (sendFrameInput only fires once nextFrame advances past
+    // them) and both sides would stall at frame 0 forever.
     for (var i = 0; i <= nextFrame; i++) {
       localInputs[i] = { p1: 0, p2: 0 };
+      sendFrameInput(i);
     }
   }
 
@@ -389,6 +423,14 @@
     localInput.p2 = state.p2 || new Array(8).fill(0);
   };
 
+  // Send a chat message to the peer. Returns false if not connected.
+  GG.sendChat = function (text) {
+    if (!active || !ws || ws.readyState !== 1) return false;
+    if (typeof text !== 'string' || !text.trim()) return false;
+    send({ type: 'p2p', data: { type: 'chat', text: text.slice(0, 500) } });
+    return true;
+  };
+
   function resumeLocalEmulator() {
     var localNes = null;
     if (role === 'host' && cfg.host && cfg.host.nes) localNes = cfg.host.nes;
@@ -398,7 +440,7 @@
     }
   }
 
-  function resetState() {
+function resetState() {
     active = false;
     role = null;
     player = null;
@@ -408,7 +450,7 @@
     nextFrame = 0;
     localInputs = {};
     peerInputs = {};
-    latestPeer = null;
+latestPeer = null;
     renderPeer = null;
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   }
@@ -428,7 +470,7 @@
   // the local emulator on the network, so both sides get a full 60 FPS. It
   // captures this frame's input, publishes it, advances the live frame counter,
   // and selects the peer's buffered input for the render frame to apply.
-  GG.step = function () {
+GG.step = function () {
     if (!active || !romReady) return false;
 
     // Stall guard: if the ready handshake happened but we somehow never
@@ -439,23 +481,31 @@
       return true;
     }
 
-    // 1) Capture our input for the current LIVE frame and publish it.
+    // 1) Capture our input for the current LIVE frame and publish it. Always
+    //    send even when we're waiting, so the peer has our input buffered.
     localInputs[nextFrame] = {
       p1: maskToByte(localInput.p1),
       p2: maskToByte(localInput.p2)
     };
     sendFrameInput(nextFrame);
 
-// 2) Pick the peer's input for the frame we are ABOUT to render.
+    // 2) PREVENT desync: pick the peer's REAL input for the frame we are
+    //    about to render. If it hasn't arrived yet (jitter), we WAIT (return
+    //    false) rather than guess — both sides must execute identical inputs.
+    //    A true peer stall is handled by the STALL_TIMEOUT bail above, so we
+    //    never advance on a guessed/wall-clock fallback that could apply a
+    //    different input than the peer and permanently desync the two cores.
     var renderFrame = nextFrame - INPUT_DELAY;
     var peer = peerInputs[renderFrame];
-    if (!peer) peer = latestPeer; // prediction fallback (holds last known input)
-    renderPeer = peer || { p1: 0, p2: 0 };
+    if (!peer) {
+      return false; // wait for the real peer input
+    }
+    renderPeer = peer;
 
     // 3) Advance live frame counter.
     nextFrame++;
 
-    // 4) Advance render frame counter (now points at the frame we applied).
+// 4) Advance render frame counter (now points at the frame we applied).
     //    Keep renderPeer cached until applyRemote() runs (before nes.frame()).
     frame = renderFrame;
 
@@ -463,18 +513,38 @@
     return true;
   };
 
-  // Apply the peer's selected input to the emulator's OTHER controller. Called
-  // by app.js after GG.step() and before nes.frame() for the render frame.
-  GG.applyRemote = function (nesObj) {
-    if (!active || !romReady || !renderPeer) return;
-    var arr = player === 1 ? renderPeer.p2 : renderPeer.p1;
+// Apply the inputs for the current RENDER frame to BOTH controllers:
+  // our own DELAYED input (localInputs[frame]) to the local controller and
+  // the peer's DELAYED input (renderPeer) to the opponent's controller.
+  //
+  // This is the fix for the "desync after a while" bug. Delay-based netcode
+  // renders INPUT_DELAY frames behind the live exchange, so for frame N the
+  // peer applies OUR input sampled for frame N. If we instead apply our
+  // CURRENT (live frame N+INPUT_DELAY) input to our own controller, the two
+  // cores execute different inputs for frame N and diverge permanently on the
+  // first button press. Applying both inputs from the SAME delayed frame keeps
+  // both sides byte-identical (controller 1 = host's frame-N input, controller
+  // 2 = guest's frame-N input) — exactly what the determinism test validates.
+  GG.applyFrame = function (nesObj) {
+    if (!active || !romReady) return;
+    var mine = localInputs[frame];
+    var peer = renderPeer;
+    // Our own input for this frame lives in the p1 slot (host) or p2 slot
+    // (guest); the opponent's lives in the opposite slot of the peer frame.
+    var myByte = (mine && player === 1) ? mine.p1 : (mine ? mine.p2 : 0);
+    var oppByte = (peer && player === 1) ? peer.p2 : (peer ? peer.p1 : 0);
+    var myCtrl = player, oppCtrl = player === 1 ? 2 : 1;
     for (var i = 0; i < 8; i++) {
       var btn = BUTTON_ORDER[i];
-      var target = player === 1 ? 2 : 1;
-      if (arr & (1 << i)) nesObj.buttonDown(target, btn);
-      else nesObj.buttonUp(target, btn);
+      if (myByte & (1 << i)) nesObj.buttonDown(myCtrl, btn);
+      else nesObj.buttonUp(myCtrl, btn);
+      if (oppByte & (1 << i)) nesObj.buttonDown(oppCtrl, btn);
+      else nesObj.buttonUp(oppCtrl, btn);
     }
   };
+
+  // Backwards-compatible alias for existing callers/tests.
+  GG.applyRemote = GG.applyFrame;
 
   GG.applyLocal = function (nesObj, p1mask, p2mask) {
     for (var i = 0; i < 8; i++) {

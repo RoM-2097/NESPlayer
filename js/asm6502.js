@@ -362,56 +362,61 @@
 
   // Main assemble() — iterative passes so zp/abs sizing converges.
   function assemble(source, origin) {
+    if (Array.isArray(source)) source = source.join('\n');
+    source = String(source || '');
     origin = (origin === undefined) ? 0x8000 : (origin & 0xFFFF);
-    var errors = [];
     var lines = tokenize(source);
 
-    var labels = {};
-    var instructions = []; // resolved per pass: { line, mode, opcode, len, operandCls, byteOffset, isData, dataBytes }
-
-    function resolveLabel(name) {
-      return (name in labels) ? labels[name] : null;
-    }
-
-    // Run passes until label addresses stabilize.
-    var prev = null;
+    var labels = {};          // label addresses from previous pass (seed)
+    var instructions = [];    // resolved per pass: { line, mode, opcode, len, cls, isData, dataBytes }
+    var errors = [];
+    var prevSig = null;
     var stable = false;
-    for (var pass = 0; pass < 12 && !stable; pass++) {
-      labels = {};
+    var pass;
+
+    for (pass = 0; pass < 12 && !stable; pass++) {
+      var nextLabels = {};
       var pc = origin;
       var passInstrs = [];
-      var changed = false;
+      var passErrors = [];
+
+      function resolveLabel(name) {
+        return (name in labels) ? labels[name] : null;
+      }
+
       for (var li = 0; li < lines.length; li++) {
         var line = lines[li];
         if (line.label) {
-          // labels are case-sensitive-ish; normalize to upper for matching
           var lkey = line.label.toUpperCase();
-          if (lkey in labels) errors.push('Duplicate label: ' + line.label + ' (line ' + line.line + ')');
-          else labels[lkey] = pc;
+          if (lkey in nextLabels) passErrors.push('Duplicate label: ' + line.label + ' (line ' + line.line + ')');
+          else nextLabels[lkey] = pc;
         }
         if (!line.mnemonic) { continue; }
         var entry = { line: line, pc: pc };
         // Data directive?
         var d = directiveBytes(line.mnemonic, line.operand || '', resolveLabel);
         if (d) {
-          if (d.error) { errors.push('Line ' + line.line + ': ' + d.error); entry.mode = 'skip'; entry.len = 0; }
+          if (d.error) { passErrors.push('Line ' + line.line + ': ' + d.error); entry.mode = 'skip'; entry.len = 0; }
           else { entry.isData = true; entry.dataBytes = d.bytes; entry.len = d.bytes.length; }
         } else {
           var cls = classifyOperand(line.operand || '', resolveLabel, pc);
-          if (cls.err) { errors.push('Line ' + line.line + ': ' + cls.err); entry.mode = 'skip'; entry.len = 0; }
+          if (cls.err) { passErrors.push('Line ' + line.line + ': ' + cls.err); entry.mode = 'skip'; entry.len = 0; }
           else {
             var picked = pickMode(line.mnemonic, cls);
-            if (picked.error) { errors.push('Line ' + line.line + ': ' + picked.error); entry.mode = 'skip'; entry.len = 0; }
+            if (picked.error) { passErrors.push('Line ' + line.line + ': ' + picked.error); entry.mode = 'skip'; entry.len = 0; }
             else { entry.mode = picked.mode; entry.opcode = picked.opcode; entry.len = picked.len; entry.cls = cls; }
           }
         }
         pc += entry.len;
         passInstrs.push(entry);
       }
+
       var sig = JSON.stringify(passInstrs.map(function (e) { return e.len; }));
-      if (prev !== null && sig === prev) stable = true;
-      prev = sig;
+      if (pass > 0 && sig === prevSig) stable = true;
+      prevSig = sig;
       instructions = passInstrs;
+      errors = passErrors;
+      labels = nextLabels;
     }
     if (!stable && pass >= 12) {
       // fall through with last known lengths

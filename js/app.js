@@ -125,6 +125,9 @@ btnControls: $('btnControls'),
     netplayRoomBox: $('netplayRoomBox'),
     netplayRoomCodeDisplay: $('netplayRoomCodeDisplay'),
     netplayDisconnect: $('netplayDisconnect'),
+    netplayChat: $('netplayChat'),
+    netplayChatInput: $('netplayChatInput'),
+    netplayChatSend: $('netplayChatSend'),
     btnBind: $('btnBind'),
     btnRecord: $('btnRecord'),
     recordIcon: $('recordIcon'),
@@ -191,12 +194,13 @@ btnControls: $('btnControls'),
   var audioWrite = 0;
   var audioRead = 0;
 
-  // Input
+// Input
   var keysHeld = {};       // KeyboardEvent.code -> true while a physical key is held
   var padHeld = {};        // NES button id -> true while a gamepad *button* is held
   var axisHeld = {};       // NES button id -> true while a gamepad *axis* (stick/hat) is held
   var inputPrev = {};      // NES button id -> last applied button state
   var padIndex = null;     // gamepad index
+  var focused = true;      // browser window focus; gamepad input is only grabbed while focused
 
   // FPS (counts emulated frames so the HUD reflects true game speed, not the
   // monitor's raw rAF tick rate).
@@ -540,17 +544,24 @@ btnControls: $('btnControls'),
   var stepAccumulator = 0;
   var lastStepTime = 0;
 
-function frame(timestamp) {
-    if (!lastStepTime) lastStepTime = timestamp;
-    var elapsed = timestamp - lastStepTime;
-    lastStepTime = timestamp;
-    // Clamp huge gaps (e.g. after a tab switch) to avoid spiralling catch-up.
+// The emulator is stepped on a setTimeout scheduler instead of
+  // requestAnimationFrame so it keeps running at full speed even when the tab
+  // or window loses focus (browsers throttle/pause rAF in background tabs).
+  // Elapsed time is measured with performance.now(), which is monotonic and
+  // independent of the frame callback's own timestamp.
+  function frame(timestamp) {
+    var now = (typeof timestamp === 'number') ? timestamp : performance.now();
+    if (!lastStepTime) lastStepTime = now;
+    var elapsed = now - lastStepTime;
+    lastStepTime = now;
+    // Clamp huge gaps (e.g. after a long tab switch) to avoid spiralling
+    // catch-up, which could otherwise spin the emulator for many frames.
     if (elapsed > 250) elapsed = 250;
     stepAccumulator += elapsed;
 
-    // Never let a single bad frame kill the render loop. If stepEmulator()
-    // throws (e.g. a netplay lockstep edge case), we still re-schedule the
-    // next rAF so the game can never freeze on a silent exception.
+    // Never let a single bad frame kill the loop. If stepEmulator() throws
+    // (e.g. a netplay lockstep edge case), we still re-schedule so the game
+    // can never freeze on a silent exception.
     try {
       while (stepAccumulator >= STEP_MS) {
         stepEmulator();
@@ -568,7 +579,7 @@ function frame(timestamp) {
       stepAccumulator = 0;
     }
     trackFPS();
-    requestAnimationFrame(frame);
+    setTimeout(function () { frame(performance.now()); }, STEP_MS);
   }
 
 function stepEmulator() {
@@ -585,10 +596,20 @@ function stepEmulator() {
 
 var GG = window.NESNetplay;
     // Lockstep only gates the emulator once BOTH sides are connected and have
-    // the ROM (isReady). While the host is waiting for a guest to join/sync,
-    // isReady() is false and the host keeps running normally instead of
-    // freezing on room creation.
+    // the ROM (isReady). While a netplay session is active but NOT yet ready
+    // (waiting/joining/syncing), the emulator MUST NOT advance: any single-
+    // player frames rendered in that window would parse RNG / timers and leave
+    // the two cores at different states, permanently desyncing the match the
+    // instant lockstep begins. So we HOLD the emulator (release held inputs and
+    // skip nes.frame()) so both sides always start the match from an identical
+    // frame 0. This is the difference between a stable netplay session and the
+    // near-immediate desync that occurred before.
     var netplayActive = !!(GG && GG.isReady && GG.isReady());
+    if (GG && GG.isActive && GG.isActive() && !netplayActive) {
+      // Held buttons must not leak into lockstep once it starts.
+      releaseAllInput();
+      return; // hold: do not render single-player frames while syncing
+    }
 
 if (!modalOpen && !cheatModalOpen && !debuggerOpen && !netplayModalOpen) {
       // Rebuild the reverse maps from the LIVE bindings every frame, then
@@ -609,11 +630,18 @@ if (!modalOpen && !cheatModalOpen && !debuggerOpen && !netplayModalOpen) {
     // arrived. GG.step() returns true only when we may advance. This section
     // is isolated so a netplay edge-case can never take down the emulator or
     // the render loop — on error we tear the session down and keep playing.
-    if (netplayActive) {
+if (netplayActive) {
       try {
         netplayFeed();
         if (!GG.step()) return;   // wait for the opponent's input this frame
-        GG.applyRemote(nes);      // apply the opponent's input to the other pad
+        // applyFrame() applies BOTH inputs for the render frame: our own
+        // DELAYED input to the local controller (overriding the immediate
+        // applyInput() write above) and the peer's input to the other pad.
+        // This keeps both cores byte-identical — the previous applyRemote()
+        // only wrote the peer's input, so the local controller held the
+        // CURRENT (live-frame) input while the peer applied our DELAYED input,
+        // permanently desyncing the two cores on the first button press.
+        GG.applyFrame(nes);
       } catch (err) {
         console.error('[nesplayer] netplay lockstep error:', err);
         try { GG.disconnect(); } catch (e) { /* ignore */ }
@@ -831,11 +859,14 @@ if (!modalOpen && !cheatModalOpen && !debuggerOpen && !netplayModalOpen) {
   var testAccumulator = 0;
   var lastTestTime = 0;
 
+  // Like the main loop, this runs on setTimeout (not rAF) so the RGB self-test
+  // keeps animating at full speed even when the tab loses focus.
   function renderLoop(timestamp) {
+    var now = (typeof timestamp === 'number') ? timestamp : performance.now();
     if (testPattern) {
-      if (!lastTestTime) lastTestTime = timestamp;
-      var elapsed = timestamp - lastTestTime;
-      lastTestTime = timestamp;
+      if (!lastTestTime) lastTestTime = now;
+      var elapsed = now - lastTestTime;
+      lastTestTime = now;
       if (elapsed > 250) elapsed = 250;
       testAccumulator += elapsed;
       while (testAccumulator >= STEP_MS) {
@@ -848,7 +879,7 @@ if (!modalOpen && !cheatModalOpen && !debuggerOpen && !netplayModalOpen) {
       lastTestTime = 0;
       testAccumulator = 0;
     }
-    requestAnimationFrame(renderLoop);
+    setTimeout(function () { renderLoop(performance.now()); }, STEP_MS);
   }
 
   function trackFPS() {
@@ -865,9 +896,27 @@ if (!modalOpen && !cheatModalOpen && !debuggerOpen && !netplayModalOpen) {
     }
   }
 
-  /* ---------- Keyboard ---------- */
+/* ---------- Keyboard ---------- */
+  // True when the user is typing into a text field (e.g. the chat box). Global
+  // game input and shortcuts must be suppressed while typing so keystrokes
+  // reach the field instead of the emulator.
+  function typingInField() {
+    var el = document.activeElement;
+    if (!el) return false;
+    var tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable === true;
+  }
+
   function handleKeyDown(e) {
     if (e.repeat) return;
+
+    // While typing in a text field (chat, cheat input, etc.), let the key
+    // reach the field and do NOT feed it to the game or trigger shortcuts.
+    if (typingInField()) {
+      // Enter in the chat box still sends the message (handled by its own
+      // keydown listener); everything else goes to the field untouched.
+      return;
+    }
 
 var anyModal = modalOpen || cheatModalOpen || debuggerOpen || netplayModalOpen;
 
@@ -927,8 +976,33 @@ if (modalOpen) closeBindModal();
     e.preventDefault();
   }
 
-  /* ---------- Gamepad ---------- */
+/* ---------- Gamepad ---------- */
+  // Gamepad spoofing/reading is only allowed while the browser window is
+  // focused. When the window loses focus we release all held gamepad buttons
+  // (so nothing stays stuck) and stop grabbing input until it regains focus.
+  function releaseGamepadInput() {
+    // Clear any held pad buttons/axes and the pad rewind trigger so the game
+    // never keeps a button "pressed" across a focus loss.
+    padHeld = {};
+    axisHeld = {};
+    releaseRewind('pad');
+    // Push buttonUp transitions to the core so the emulator sees them released.
+    if (nes) {
+      var ctrl = localController();
+      for (var j = 0; j < NES_BUTTONS.length; j++) {
+        var nid = NES_BUTTONS[j].id;
+        if (inputPrev[nid]) {
+          nes.buttonUp(ctrl, nid);
+          inputPrev[nid] = false;
+          setHud(nid, false);
+        }
+      }
+    }
+  }
+
   function pollGamepad() {
+    // Only grab gamepad input while the browser window is focused.
+    if (!focused) return;
     if (!navigator.getGamepads) return;
     var pads = navigator.getGamepads();
     if (!pads) return;
@@ -1266,6 +1340,48 @@ function closeCheatModal() {
     els.netplayStatus.className = 'netplay-status' + (cls ? ' ' + cls : '');
   }
 
+// This local player's number: host = Player 1, guest = Player 2. Outside
+  // netplay there is only Player 1.
+  function myPlayerNumber() {
+    var GG = window.NESNetplay;
+    if (GG && GG.isActive && GG.isActive()) {
+      return GG.getRole() === 'guest' ? 2 : 1;
+    }
+    return 1;
+  }
+
+  // Append a message bubble to the netplay chat log. who is the sender label
+  // (e.g. 'Player 1'); kind is 'me' (right-aligned) or 'peer' (left-aligned).
+  function appendNetplayChat(who, text, kind) {
+    if (!els.netplayChat) return;
+    var empty = els.netplayChat.querySelector('.netplay-chat__empty');
+    if (empty) empty.remove();
+    var msg = document.createElement('div');
+    msg.className = 'netplay-chat__msg netplay-chat__msg--' + (kind === 'me' ? 'me' : 'peer');
+    var whoEl = document.createElement('span');
+    whoEl.className = 'netplay-chat__who';
+    whoEl.textContent = who;
+    var textEl = document.createElement('span');
+    textEl.textContent = text;
+    msg.appendChild(whoEl);
+    msg.appendChild(textEl);
+    els.netplayChat.appendChild(msg);
+    els.netplayChat.scrollTop = els.netplayChat.scrollHeight;
+  }
+
+// Send a chat message to the peer over the existing p2p socket. The sender
+  // also sees their own message echoed locally (the relay only relays, it does
+  // not echo back), labelled "Player <n>" by this client's player number.
+  function sendNetplayChat() {
+    var GG = window.NESNetplay;
+    if (!GG || !GG.isActive() || !GG.sendChat) return;
+    var text = (els.netplayChatInput.value || '').trim();
+    if (!text) return;
+    GG.sendChat(text);
+    appendNetplayChat('Player ' + myPlayerNumber(), text, 'me');
+    els.netplayChatInput.value = '';
+  }
+
   // Wire the netplay module's callbacks into the app UI and emulator. Called
   // once at startup (netplay.js is guaranteed loaded before the DOMContentLoaded
   // init because index.html loads it first).
@@ -1295,9 +1411,17 @@ function closeCheatModal() {
       if (els.netplayRoomBox) els.netplayRoomBox.hidden = false;
       netplayStatus('Room ' + code + ' created — share this code', 'is-ok');
     };
-    GG.onJoined = function (code) {
+GG.onJoined = function (code) {
       netplayStatus('Joined room ' + code, 'is-ok');
       els.netplayRoomBox.hidden = true;
+    };
+// Incoming chat from the peer. The relay only ever forwards peer messages
+    // (it never echoes), so 'from' is normally 'peer'; label it with the OTHER
+    // player's number. If 'me' ever arrives it is labelled with our own number.
+    GG.onChat = function (from, text) {
+      var peerNum = (myPlayerNumber() === 2) ? 1 : 2;
+      var who = (from === 'peer') ? 'Player ' + peerNum : 'Player ' + myPlayerNumber();
+      appendNetplayChat(who, text, from);
     };
 
 // Host/guest config. The host provides the loaded ROM bytes so the guest
@@ -2177,6 +2301,10 @@ els.netplayCreate.addEventListener('click', function () {
     els.netplayDisconnect.addEventListener('click', function () {
       if (window.NESNetplay) window.NESNetplay.disconnect();
     });
+    els.netplayChatSend.addEventListener('click', sendNetplayChat);
+    els.netplayChatInput.addEventListener('keydown', function (e) {
+      if (e.code === 'Enter') { e.preventDefault(); sendNetplayChat(); }
+    });
     els.btnBind.addEventListener('click', function () { openBindModal(); });
     els.btnCloseModal.addEventListener('click', closeBindModal);
     els.bindModal.addEventListener('click', function (e) {
@@ -2206,6 +2334,18 @@ els.netplayCreate.addEventListener('click', function () {
         els.padStatus.textContent = '🎮 none';
         els.padStatus.classList.remove('is-connected');
       }
+    });
+
+    // The browser window losing focus means the gamepad may be left in a held
+    // state with no way to release it here, so release all pad input immediately
+    // and stop reading the gamepad until focus returns. This prevents the game
+    // from receiving phantom input while the user is in another window.
+    window.addEventListener('blur', function () {
+      focused = false;
+      releaseGamepadInput();
+    });
+    window.addEventListener('focus', function () {
+      focused = true;
     });
 
 setupDnD();
