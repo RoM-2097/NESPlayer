@@ -1,6 +1,6 @@
-# Render blueprint — deploy NESPLAYER (static host + netplay relay) with one click.
-# Push this repo to GitHub and create a Blueprint from the Render dashboard,
-# or use the "New > Blueprint" flow pointing at this repo.
+# Render blueprint — deploy NESPLAYER (static host + WebSocket relay) to the
+# Render free/starter tier in one click. Render sets PORT automatically and
+# provides HTTPS, so netplay upgrades to wss:// on the same origin.
 services:
   - type: web
     name: nesplayer
@@ -11,4 +11,6 @@ services:
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: 18
+      - key: ALLOWED_ORIGINS
+        sync: false

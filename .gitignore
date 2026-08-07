@@ -3,15 +3,25 @@ node_modules/
 
 # Logs
 *.log
-npm-debug.log*
+relay_run_err.log
+relay_run_out.log
+relay_stdout.log
+relay.log
 
-# Test / runtime artifacts
-server/_test_*.txt
-server/*_out*.txt
-server/.scripts/
+# Test artifacts
+server/_test_*_out.txt
+server/_test_out*.txt
+server/_test_frame_out.txt
+server/_test_illegal_out.txt
+server/_test_render_safe_out.txt
+server/repro*_out.txt
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# Env / secrets
+.env
+.env.local

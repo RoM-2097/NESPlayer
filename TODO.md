@@ -1,27 +1,23 @@
-# NESPLAYER — Hosting / Deploy setup
+# NESPLAYER — Hosting / Deploy task
 
 ## Goal
-Make NESPLAYER trivially deployable as a Node web service so the static app and
-the netplay WebSocket relay share one origin (page + `wss://` on the same host).
+Make NESPLAYER (single-player + netplay) deployable to any Node host with minimal effort.
 
 ## Tasks
-- [x] index.html: Add a "☕ Buy me a coffee" button (buymeacoffee.com/RoM2097) in the nav and footer.
-- [x] css/style.css: Add official yellow `.btn--bmac` button styling + nav/footer placement.
-- [x] package.json (root): Add `"start": "node server/relay.js"`, the `ws` dependency, and `engines.node >= 16` so Node hosts (Render/Railway/Glitch/Fly) detect and run the app.
-- [x] Procfile: `web: npm start` for Render/Heroku push-to-deploy.
-- [x] render.yaml: Render blueprint (free-tier web service, `/health` probe).
-- [x] fly.toml: Fly.io config (internal port 3000, HTTPS, auto-stop).
-- [x] .gitignore: Ignore `node_modules`, logs, and test artifacts.
-- [x] README.md: Add a "Hosting / Deploy" section covering static-only vs full netplay (Render/Railway/Glitch/Fly).
-- [x] js/netplay.js: WebSocket security fix — `normalizeWsUrl()` now upgrades `ws://` → `wss://` (and defaults bare host URLs to `wss://`) when the page is served over HTTPS, so netplay works on https-only hosts (Render/Fly) instead of being blocked as insecure mixed content.
-- [x] index.html: Bump cache-bust versions on `style.css` (+.05) and `netplay.js` (+.11).
-- [x] Verify: `node server/relay.js` boots; `/health` returns `{"ok":true,"rooms":0}`; `/` serves the app; adaptive-delay probe test reaches frame 61 in lockstep on both sides.
+- [x] Create root `package.json` (`start` → `node server/relay.js`, `ws` dependency, `engines` node >=16).
+- [x] Add `Procfile` (`web: npm start`) for Render / Heroku.
+- [x] Add `render.yaml` blueprint (free tier, `/health` probe, PORT auto-injected).
+- [x] Add `fly.toml` for Fly.io.
+- [x] Add `.gitignore` (node_modules, logs, test artifacts, .env).
+- [x] Add "Hosting / Deploy" section to `README.md` (Render, Railway, Glitch, Fly, static-only).
+- [x] Add a "Buy Me a Coffee!" link in the landing nav + footer → `https://buymeacoffee.com/RoM2097` (styled `.btn--bmac` in `css/style.css`).
 
-## Local test
-```
-npm install
-npm start        # http://localhost:3000
-```
+Notes:
+- `server/relay.js` serves static files AND the WebSocket relay on one origin, so
+  netplay auto-upgrades to `wss://` on HTTPS. No extra config on the host needed.
+- Verified: `node --check js/netplay.js` passes; `server/_test_live_determinism.js`
+  (180-frame lockstep) and `server/test_real_soak.js` (120+ frames over the live
+  relay) both pass after the determinism hardening below.
 
 ---
 

@@ -55,9 +55,18 @@
   var active = false;
   var state = 'idle';       // idle | connecting | waiting | syncing | playing | error | ended
 
-  var romReady = false;     // both sides connected + have the ROM; lockstep may run
+var romReady = false;     // both sides connected + have the ROM; lockstep may run
   var frame = 0;            // RENDER frame — the frame we are about to draw this tick
   var nextFrame = 0;        // LIVE frame — the next input we capture and send
+
+  // Frame-skew guard. Each input message carries the sender's RENDER frame. We
+  // track the peer's most recent render frame so the faster side can WAIT for
+  // the slower side to catch up. This is the safety net that keeps the two
+  // cores in lockstep: even if one side momentarily advances faster, it holds
+  // back until the peer reaches the same render frame, so they can never drift
+  // apart and permanently desync.
+  var peerRenderFrame = -1; // peer's most recent render frame (from input msgs)
+  var SKEW_MAX = 4;         // max acceptable render-frame lead before we wait
 
 // Frames of input delay. The current render frame is always nextFrame -
   // INPUT_DELAY, so the peer's input for it has had time to arrive in flight.
@@ -164,7 +173,9 @@ var INPUT_DELAY = 3;
     return arr;
   }
 
-// Publish our input for the given live frame to the peer.
+// Publish our input for the given live frame to the peer. We also attach the
+  // sender's current RENDER frame so the peer can watch for skew and make the
+  // faster side wait (see GG.step). This is how both sides stay in lockstep.
   function sendFrameInput(n) {
     var inp = localInputs[n];
     if (!inp) return;
@@ -173,6 +184,7 @@ var INPUT_DELAY = 3;
       data: {
         type: 'input',
         frame: n,
+        rframe: frame,
         p1: inp.p1,
         p2: inp.p2
       }
@@ -462,12 +474,17 @@ if (data.type === 'chat') {
     }
   }
 
-  // Buffer a peer input frame by its live frame number. Keep the most recently
-  // received one as the prediction fallback.
+// Buffer a peer input frame by its live frame number. Keep the most recently
+  // received one as the prediction fallback. Also track the peer's RENDER frame
+  // (sent in each input message) so GG.step can make the faster side wait and
+  // keep both cores in lockstep.
   function onPeerInput(data) {
     if (data.frame === undefined) return;
     peerInputs[data.frame] = { p1: data.p1 >>> 0, p2: data.p2 >>> 0 };
     latestPeer = peerInputs[data.frame];
+    if (typeof data.rframe === 'number' && data.rframe > peerRenderFrame) {
+      peerRenderFrame = data.rframe;
+    }
     // Prune old buffered frames (we render with a bounded delay, so frames far
     // behind or far ahead are no longer needed).
     var min = frame - 4, max = nextFrame + INPUT_DELAY + 8;
@@ -492,6 +509,7 @@ function becomeReady() {
     // peer's legitimate initial inputs and must be preserved.
 latestPeer = null;
     renderPeer = null;
+    peerRenderFrame = -1; // reset so the skew guard doesn't use stale state
     lastStep = Date.now();
     // Seed our own buffered inputs for the delay window (all-zero start) AND
     // TRANSMIT them immediately. GG.step() starts rendering at
@@ -576,6 +594,7 @@ function resetState() {
     peerInputs = {};
 latestPeer = null;
     renderPeer = null;
+    peerRenderFrame = -1;
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
     // Reset adaptive-delay calibration state.
     rttSamples = [];
@@ -605,12 +624,22 @@ latestPeer = null;
     setState('idle');
   }
 
-  // Called every emulated frame by app.js once netplay is ready. Returns true
-  // (a frame may advance) unconditionally — delay-based netcode never gates
-  // the local emulator on the network, so both sides get a full 60 FPS. It
-  // captures this frame's input, publishes it, advances the live frame counter,
-  // and selects the peer's buffered input for the render frame to apply.
-GG.step = function () {
+  // Called every emulated frame by app.js once netplay is ready. It captures
+  // this frame's input, publishes it, and selects the peer's buffered input for
+  // the render frame. Returns true only when a frame may advance.
+  //
+  // DETERMINISM (the key guarantee): Both cores must execute IDENTICAL inputs
+  // for every frame. If the peer's input for the render frame hasn't arrived
+  // yet (a latency spike beyond the calibrated window), we MUST WAIT (return
+  // false) rather than substitute a guessed/holding input. The old "hold the
+  // most recent peer input" shortcut made the two sides guess DIFFERENT inputs
+  // for the same frame whenever they under-ran at different moments — a
+  // permanent desync that surfaced as "in sync for a while, then out of sync".
+  // Waiting is the only correct choice: both sides advance the same frames on
+  // the same real inputs, so divergence is impossible. The adaptive INPUT_DELAY
+  // (worst-case one-way + 2-frame safety margin) makes these waits rare, so
+  // normal play stays at a full 60 FPS.
+  GG.step = function () {
     if (!active || !romReady) return false;
 
     // Stall guard: if the ready handshake happened but we somehow never
@@ -629,38 +658,28 @@ GG.step = function () {
     };
     sendFrameInput(nextFrame);
 
-// 2) Pick the peer's input for the frame we are about to render. The
-    //    adaptive INPUT_DELAY (worst-case one-way + 2-frame safety margin)
-    //    makes this frame essentially always already buffered, so we can run
-    //    at a full 60 FPS. If it is somehow still missing (a latency spike
-    //    beyond the calibrated window), we HOLD the most recent peer input for
-    //    this frame rather than returning false. Returning false would make
-    //    app.js SKIP nes.frame() entirely — dropping the frame, which both
-    //    tanks the FPS (the ~25 FPS the user saw) AND desyncs the two cores
-    //    (one side renders a frame the other skips). Holding the last input
-    //    keeps both sides rendering the exact same frame count, so lockstep is
-    //    preserved and the game stays at 60 FPS. A true peer stall is caught
-    //    by the STALL_TIMEOUT bail above.
+    // 2) Frame-skew guard: if we are running MORE than SKEW_MAX render frames
+    //    ahead of the peer, WAIT for it to catch up. This is the safety net that
+    //    prevents the faster side from pulling away and eventually permanently
+    //    diverging (the "desync after a while"). A small lead (<= SKEW_MAX) is
+    //    allowed so normal jitter doesn't stall either side.
+    if (peerRenderFrame >= 0 && frame > peerRenderFrame + SKEW_MAX) {
+      return false; // wait for the peer to catch up
+    }
+
+    // 3) Pick the peer's real input for the frame we are about to render. If it
+    //    hasn't arrived yet, WAIT (return false) so both sides execute the same
+    //    input for this frame. The adaptive INPUT_DELAY makes this rare.
     var renderFrame = nextFrame - INPUT_DELAY;
     var peer = peerInputs[renderFrame];
-    if (!peer && latestPeer) {
-      // Jitter fallback: reuse the most recent input we did receive. Since
-      // both sides run the same delay model, they will both hold on the same
-      // frame, so the cores stay in lockstep.
-      peer = latestPeer;
-    }
     if (!peer) {
-      // No input at all yet (shouldn't happen after becomeReady seeds the
-      // window) — use neutral (no buttons) so the frame still advances.
-      peer = { p1: 0, p2: 0 };
+      return false; // wait for the real peer input — NEVER guess
     }
     renderPeer = peer;
 
-    // 3) Advance live frame counter.
+    // 4) Advance live frame counter, then render frame counter (which now
+    //    points at the frame we just applied).
     nextFrame++;
-
-// 4) Advance render frame counter (now points at the frame we applied).
-    //    Keep renderPeer cached until applyRemote() runs (before nes.frame()).
     frame = renderFrame;
 
     lastStep = Date.now();

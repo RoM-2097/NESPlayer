@@ -1,22 +1,21 @@
-# Fly.io config — optional alternative to Render/Railway.
-# Deploy with:  fly launch  (in this directory), then  fly deploy
+# Fly.io configuration — deploy NESPLAYER (static host + WebSocket relay).
+# Fly provides HTTPS/TLS and wires the PORT env var automatically.
 app = "nesplayer"
+primary_region = "iad"
 
 [build]
-  [build.args]
-    NODE_VERSION = "20"
+  builder = "heroku/buildpacks:nodejs"
 
 [env]
-  NODE_ENV = "production"
+  NODE_VERSION = "18"
 
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = true
   auto_start_machines = true
   min_machines_running = 0
+  processes = ["app"]
 
-  [http_service.concurrency]
-    type = "connections"
-    hard_limit = 100
-    soft_limit = 50
+[processes]
+  app = "node server/relay.js"
