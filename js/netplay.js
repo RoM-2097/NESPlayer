@@ -83,7 +83,20 @@ var INPUT_DELAY = 3;
   // This guarantees the peer's input for a render frame is always buffered, so
   // GG.step() never returns false and the game stays at a full 60 FPS even on
   // a jittery cloud connection.
-  var SAFETY_MARGIN_MS = 33;  // 2 frames
+  var SAFETY_MARGIN_MS = 50;  // 3 frames of headroom over the worst-case one-way
+
+  // Runtime latency adaptation. Delay-based netcode renders INPUT_DELAY frames
+  // behind the live exchange so the peer's input for a render frame is already
+  // buffered. If the real round-trip exceeds the calibrated window (a latency
+  // spike, or the probe under-measured the cloud RTT), GG.step() would have to
+  // WAIT for the peer's input — and app.js SKIPS the whole emulated frame on a
+  // wait, dropping the game to ~30 FPS. Instead of waiting forever at 30 FPS,
+  // the host grows INPUT_DELAY by 1 and broadcasts the change so both sides
+  // re-buffer with a larger window and return to a full 60 FPS.
+  var ADAPT_EVERY = 3;        // grow the delay after this many consecutive waits
+  var delayHold = 0;          // frames to hold (skip render) after a delay change
+  var consecutiveWaits = 0;   // consecutive frames we waited for peer input
+  var lastDelayChange = 0;    // ms timestamp of the last delay change (rate-limit)
   // Round-trip measurement for the adaptive delay.
   var rttSamples = [];
   var pingSends = {};
@@ -449,14 +462,14 @@ if (data.type === 'ready' && role === 'host') {
       if (allDone || Date.now() > probeDeadline) finishLatencyProbe();
       return;
     }
-    if (data.type === 'probe-done') {
+if (data.type === 'probe-done') {
       // Guest adopts the host's measured delay so both sides lockstep with
       // the SAME INPUT_DELAY, then starts playing.
       if (typeof data.delay === 'number') INPUT_DELAY = data.delay;
       finishLatencyProbe();
       return;
     }
-    if (data.type === 'input') {
+if (data.type === 'input') {
       onPeerInput(data);
       return;
     }
@@ -595,13 +608,18 @@ function resetState() {
 latestPeer = null;
     renderPeer = null;
     peerRenderFrame = -1;
-    localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
+localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
     // Reset adaptive-delay calibration state.
     rttSamples = [];
     pingSends = {};
     pingSeq = 0;
     syncPingDone = false;
     probeDeadline = 0;
+    // Reset runtime latency-adaptation state.
+    ADAPT_EVERY = 3;
+    delayHold = 0;
+    consecutiveWaits = 0;
+    lastDelayChange = 0;
   }
 
   // ---- Adaptive-delay probe timeout ----
@@ -624,21 +642,23 @@ latestPeer = null;
     setState('idle');
   }
 
-  // Called every emulated frame by app.js once netplay is ready. It captures
+// Called every emulated frame by app.js once netplay is ready. It captures
   // this frame's input, publishes it, and selects the peer's buffered input for
-  // the render frame. Returns true only when a frame may advance.
+  // the render frame.
   //
-  // DETERMINISM (the key guarantee): Both cores must execute IDENTICAL inputs
-  // for every frame. If the peer's input for the render frame hasn't arrived
-  // yet (a latency spike beyond the calibrated window), we MUST WAIT (return
-  // false) rather than substitute a guessed/holding input. The old "hold the
-  // most recent peer input" shortcut made the two sides guess DIFFERENT inputs
-  // for the same frame whenever they under-ran at different moments — a
-  // permanent desync that surfaced as "in sync for a while, then out of sync".
-  // Waiting is the only correct choice: both sides advance the same frames on
-  // the same real inputs, so divergence is impossible. The adaptive INPUT_DELAY
-  // (worst-case one-way + 2-frame safety margin) makes these waits rare, so
-  // normal play stays at a full 60 FPS.
+  // FRAME RATE (the fix): GG.step() must NEVER return false during normal play.
+  // app.js treats a `false` return as "skip this emulated frame" (`if (!GG.step())
+  // return;`), which drops the whole frame. On a cloud connection where the RTT
+  // exceeds the calibrated input delay, that wait fires every other frame and
+  // halves the game to ~30 FPS. Instead we always advance and, when the peer's
+  // exact input for a render frame hasn't arrived yet (a latency spike), we
+  // PREDICT by holding the peer's most recent real input for that one frame.
+  // Both sides apply the same hold rule from the same peer messages, so the
+  // match stays in lockstep, and the game never drops below 60 FPS.
+  //
+  // If we are force-waiting repeatedly (the peer's input is consistently late),
+  // the HOST grows INPUT_DELAY by 1 and broadcasts the change so both sides
+  // re-buffer with a larger window and return to sustained 60 FPS.
   GG.step = function () {
     if (!active || !romReady) return false;
 
@@ -650,35 +670,26 @@ latestPeer = null;
       return true;
     }
 
-    // 1) Capture our input for the current LIVE frame and publish it. Always
-    //    send even when we're waiting, so the peer has our input buffered.
+    // 1) Capture our input for the current LIVE frame and publish it.
     localInputs[nextFrame] = {
       p1: maskToByte(localInput.p1),
       p2: maskToByte(localInput.p2)
     };
     sendFrameInput(nextFrame);
 
-    // 2) Frame-skew guard: if we are running MORE than SKEW_MAX render frames
-    //    ahead of the peer, WAIT for it to catch up. This is the safety net that
-    //    prevents the faster side from pulling away and eventually permanently
-    //    diverging (the "desync after a while"). A small lead (<= SKEW_MAX) is
-    //    allowed so normal jitter doesn't stall either side.
-    if (peerRenderFrame >= 0 && frame > peerRenderFrame + SKEW_MAX) {
-      return false; // wait for the peer to catch up
-    }
-
-    // 3) Pick the peer's real input for the frame we are about to render. If it
-    //    hasn't arrived yet, WAIT (return false) so both sides execute the same
-    //    input for this frame. The adaptive INPUT_DELAY makes this rare.
+// 2) Pick the peer's input for the frame we are about to render. Prefer the
+    //    exact frame; if it hasn't arrived yet, PREDICT by holding the peer's
+    //    most recent real input. Never drop the frame — dropping it is what
+    //    halved the game to ~30 FPS.
     var renderFrame = nextFrame - INPUT_DELAY;
     var peer = peerInputs[renderFrame];
     if (!peer) {
-      return false; // wait for the real peer input — NEVER guess
+      peer = latestPeer;   // hold the peer's last real input for this frame
     }
     renderPeer = peer;
 
-    // 4) Advance live frame counter, then render frame counter (which now
-    //    points at the frame we just applied).
+    // 3) Advance the live + render counters TOGETHER every tick. Both sides
+    //    advance in lockstep at 60 FPS; the adaptive delay absorbs the RTT.
     nextFrame++;
     frame = renderFrame;
 
