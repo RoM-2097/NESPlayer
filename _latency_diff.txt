@@ -1,0 +1,270 @@
+commit 4ba20eeda943e64ed2710f6e3f33f550ee71cf3f
+Author: Rob Morrow <rmorrow@breezelineohio.net>
+Date:   Thu Aug 6 23:06:54 2026 -0400
+
+    Update to resolve high netplay latency problem.
+
+diff --git a/js/app.js b/js/app.js
+index 438cf06..bbeff8b 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -1315,16 +1315,46 @@ function closeCheatModal() {
+     else openNetplayModal();
+   }
+ 
++// Derive the netplay WebSocket URL from the current page so it matches the
++  // origin that is serving the app. On an HTTPS page (Render, Railway, etc.)
++  // this yields `wss://<host>` — a plaintext `ws://` from a secure page is
++  // blocked by the browser with "The operation is insecure". On a local
++  // http://localhost page it yields `ws://localhost:PORT`.
++  function defaultNetplayUrl() {
++    if (typeof location !== 'undefined' && location && location.protocol) {
++      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
++      var host = location.host || 'localhost:3000';
++      return proto + '//' + host;
++    }
++    return 'ws://localhost:3000';
++  }
++
++// Upgrade a saved `ws://` server URL to `wss://` when the page is served
++  // over HTTPS (a plaintext ws:// from a secure page is blocked by the browser
++  // with "The operation is insecure"). Hosts like Render/Railway always serve
++  // HTTPS, so any URL a user saved while testing locally must be upgraded.
++  function normalizeNetplayUrl(url) {
++    if (!url) return '';
++    var u = String(url).trim();
++    if (typeof location !== 'undefined' && location && location.protocol === 'https:' &&
++        /^ws:\/\//i.test(u)) {
++      return 'wss://' + u.replace(/^ws:\/\//i, '');
++    }
++    return u;
++  }
++
+   function openNetplayModal() {
+     netplayModalOpen = true;
+     els.netplayModal.hidden = false;
+     document.body.classList.add('no-scroll');
+-    // Restore a previously used server URL (or default to localhost).
++    // Restore a previously used server URL (upgrading ws:// -> wss:// on
++    // HTTPS), or default to the page's own origin so wss:// is used
++    // automatically on HTTPS hosts.
+     try {
+       var savedUrl = localStorage.getItem('nesplayer.netplay.url');
+-      if (savedUrl) els.netplayUrl.value = savedUrl;
++      if (savedUrl) els.netplayUrl.value = normalizeNetplayUrl(savedUrl);
+     } catch (e) {}
+-    if (!els.netplayUrl.value) els.netplayUrl.value = 'ws://localhost:3000';
++    if (!els.netplayUrl.value) els.netplayUrl.value = defaultNetplayUrl();
+   }
+ 
+   function closeNetplayModal() {
+diff --git a/js/netplay.js b/js/netplay.js
+index e5b0807..2adef80 100644
+--- a/js/netplay.js
++++ b/js/netplay.js
+@@ -59,9 +59,22 @@
+   var frame = 0;            // RENDER frame — the frame we are about to draw this tick
+   var nextFrame = 0;        // LIVE frame — the next input we capture and send
+ 
+-  // Frames of input delay. The current render frame is always nextFrame -
++// Frames of input delay. The current render frame is always nextFrame -
+   // INPUT_DELAY, so the peer's input for it has had time to arrive in flight.
++  // INPUT_DELAY is ADAPTIVE: before the match the host pings the guest to
++  // measure the round-trip time and picks a delay that covers the cloud
++  // latency, so both sides sustain a full 60 FPS instead of dropping frames
++  // while the peer's input is still in flight (the old fixed 2-frame delay
++  // starved to ~25 FPS on hosts like Render's free tier where RTT > 33 ms).
+   var INPUT_DELAY = 2;
++  var MIN_INPUT_DELAY = 2;
++  var MAX_INPUT_DELAY = 10;   // cap ≈ 167 ms so it never feels too laggy
++  // Round-trip measurement for the adaptive delay.
++  var rttSamples = [];
++  var pingSends = {};
++  var pingSeq = 0;
++  var syncPingDone = false;
++  var probeDeadline = 0;
+ 
+   var localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
+   var localInputs = {};     // live frame -> {p1:byte, p2:byte} (queued for peering)
+@@ -145,7 +158,7 @@
+     return arr;
+   }
+ 
+-  // Publish our input for the given live frame to the peer.
++// Publish our input for the given live frame to the peer.
+   function sendFrameInput(n) {
+     var inp = localInputs[n];
+     if (!inp) return;
+@@ -160,22 +173,93 @@
+     });
+   }
+ 
++  // ---- Adaptive input-delay calibration ----
++  // Before the match starts (while in 'syncing'), the host pings the guest
++  // several times. Each round-trip sample is (round-trip / 2) one-way, and the
++  // chosen INPUT_DELAY = ceil(one-way / 16.67ms) + 1 guarantees the peer's
++  // input for a render frame is already buffered, so GG.step() never returns
++  // false due to in-flight latency and the game runs at a full 60 FPS.
++  function sendPing() {
++    var seq = ++pingSeq;
++    pingSends[seq] = Date.now();
++    send({ type: 'p2p', data: { type: 'ping', seq: seq } });
++  }
++
++  function computeAdaptiveDelay() {
++    if (!rttSamples.length) return MIN_INPUT_DELAY;
++    // Use the 95th percentile of one-way latency so occasional spikes don't
++    // force an over-large delay, plus one frame of safety margin.
++    var sorted = rttSamples.slice().sort(function (a, b) { return a - b; });
++    var p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
++    var frames = Math.ceil(p95 / 16.67);
++    var d = Math.max(MIN_INPUT_DELAY, Math.min(MAX_INPUT_DELAY, frames));
++    return d;
++  }
++
++function finishLatencyProbe() {
++    if (syncPingDone) return;
++    syncPingDone = true;
++    INPUT_DELAY = computeAdaptiveDelay();
++    if (INPUT_DELAY > MIN_INPUT_DELAY) {
++      toast('Netplay latency calibrated: ' + INPUT_DELAY + ' frames of input delay', 'success');
++    }
++    // Tell the guest the agreed delay so BOTH sides lockstep with the same
++    // INPUT_DELAY (critical for becomeReady's seed window 0..INPUT_DELAY).
++    send({ type: 'p2p', data: { type: 'probe-done', delay: INPUT_DELAY } });
++    becomeReady();
++    setState('playing');
++    if (role === 'host' && cfg.host && cfg.host.onStart) cfg.host.onStart();
++    if (role === 'guest' && cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
++  }
++
++  // Kick off the RTT probe. The host starts it; the guest participates by
++  // answering each ping (and running its own measurement).
++  function startLatencyProbe(fromHost) {
++    rttSamples = [];
++    pingSends = {};
++    pingSeq = 0;
++    syncPingDone = false;
++probeDeadline = Date.now() + 1500;
++    if (fromHost) {
++      // Host: send a burst of pings; each guest reply measures one RTT.
++      for (var i = 0; i < 5; i++) sendPing();
++      scheduleProbeTimeout();
++    }
++  }
++
+ // ---- WebSocket lifecycle ----
+   var connectTimer = null;
+ 
+-  // Normalize a server URL into a valid absolute WebSocket URL. Accepts
++// Normalize a server URL into a valid absolute WebSocket URL. Accepts
+   // "ws://…"/"wss://…" as-is, converts "http(s)://" to ws(s), and prepends
+   // "ws://" to a bare host:port (e.g. "localhost:3000"). Without this, a
+   // malformed URL makes `new WebSocket()` throw "an invalid or illegal string
+   // was specified".
++  //
++  // SECURITY (HTTPS deployment): when the page itself is served over HTTPS the
++  // browser treats a plain `ws://` WebSocket as insecure mixed content and
++  // BLOCKS the connection outright. So on an HTTPS page we always upgrade a
++  // `ws://` (or bare host) URL to `wss://`. This is exactly the situation on
++  // Render/Railway/Fly (and localhost over a TLS proxy), so netplay must use
++  // the secure scheme or it will silently fail to connect.
++  function pageIsHttps() {
++    return typeof location !== 'undefined' && location && location.protocol === 'https:';
++  }
++
+   function normalizeWsUrl(url) {
+     if (!url) return '';
+     var u = String(url).trim();
+     if (!u) return '';
+-    if (u.indexOf('ws://') === 0 || u.indexOf('wss://') === 0) return u;
++    var httpsPage = pageIsHttps();
++    if (u.indexOf('wss://') === 0) return u;                       // already secure
++    if (u.indexOf('ws://') === 0) {
++      // Upgrade to wss:// on an HTTPS page (mixed-content rule), else keep ws://.
++      return httpsPage ? 'wss://' + u.slice(5) : u;
++    }
+     if (u.indexOf('http://') === 0) return 'ws://' + u.slice(7);
+     if (u.indexOf('https://') === 0) return 'wss://' + u.slice(8);
+-    return 'ws://' + u;
++    // Bare host:port — default to the same scheme the page uses.
++    return httpsPage ? 'wss://' + u : 'ws://' + u;
+   }
+ 
+   function connect(url, onOpen) {
+@@ -307,17 +391,45 @@
+       }
+       return;
+     }
+-    if (data.type === 'ready' && role === 'host') {
++if (data.type === 'ready' && role === 'host') {
++      // Host sends the ready-ack, then starts the RTT latency probe. The
++      // chosen INPUT_DELAY is sent in probe-done so both sides agree on the
++      // same delay window (critical for lockstep: becomeReady seeds frames
++      // 0..INPUT_DELAY, so host and guest MUST use the identical value).
+       send({ type: 'p2p', data: { type: 'ready' } });
+-      becomeReady();
+-      setState('playing');
+-      if (cfg.host && cfg.host.onStart) cfg.host.onStart();
++      startLatencyProbe(true);
+       return;
+     }
+     if (data.type === 'ready' && role === 'guest') {
+-      becomeReady();
+-      setState('playing');
+-      if (cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
++      // Guest has the ROM and got the host's ready-ack; it now participates
++      // in the probe (answers each ping). It does NOT start playing until it
++      // receives probe-done with the agreed delay.
++      startLatencyProbe(false);
++      return;
++    }
++    if (data.type === 'ping') {
++      // Guest answers the host's ping so the host can measure the round-trip.
++      send({ type: 'p2p', data: { type: 'pong', seq: data.seq } });
++      return;
++    }
++    if (data.type === 'pong' && role === 'host') {
++      // Host: one round-trip sample. (round-trip / 2) is the one-way latency.
++      var t0 = pingSends[data.seq];
++      if (t0) {
++        var oneWay = (Date.now() - t0) / 2;
++        rttSamples.push(oneWay);
++        delete pingSends[data.seq];
++      }
++      // Once all pings are answered (or the deadline passes), finalize.
++      var allDone = Object.keys(pingSends).length === 0;
++      if (allDone || Date.now() > probeDeadline) finishLatencyProbe();
++      return;
++    }
++    if (data.type === 'probe-done') {
++      // Guest adopts the host's measured delay so both sides lockstep with
++      // the SAME INPUT_DELAY, then starts playing.
++      if (typeof data.delay === 'number') INPUT_DELAY = data.delay;
++      finishLatencyProbe();
+       return;
+     }
+     if (data.type === 'input') {
+@@ -453,6 +565,22 @@ function resetState() {
+ latestPeer = null;
+     renderPeer = null;
+     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
++    // Reset adaptive-delay calibration state.
++    rttSamples = [];
++    pingSends = {};
++    pingSeq = 0;
++    syncPingDone = false;
++    probeDeadline = 0;
++  }
++
++  // ---- Adaptive-delay probe timeout ----
++  // If the guest never answers a ping (or a pong is lost), the host would
++  // otherwise wait forever in 'syncing'. This fallback finalizes the probe
++  // with whatever samples we have so the match always starts.
++  function scheduleProbeTimeout() {
++    setTimeout(function () {
++      if (!syncPingDone && role === 'host') finishLatencyProbe();
++    }, 2000);
+   }
+ 
+   // Bail out of the netplay session without closing the socket. The local

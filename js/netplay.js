@@ -92,6 +92,22 @@
   var delayMisses = 0;          // frames where we HAD to wait for peer input
   var delaySamples = 0;         // frames sampled since the last adjustment
 
+  // ---- Pre-match RTT calibration (restores 60 FPS) ----
+  // The in-play adaptive tuner only grows the render delay AFTER misses
+  // accumulate, and at ~50 FPS the miss rate (~17%) sits just below the growth
+  // threshold, so it never adapts and the game stays stuck at 50 FPS. To fix
+  // this we calibrate the input delay UP FRONT: after the ROM handshake the
+  // host pings the guest over the reliable channel, measures one-way latency,
+  // and both sides agree on an INPUT_DELAY that covers the live RTT so
+  // GG.step() never drops a frame in flight. The in-play adapter then only
+  // corrects drift. See TODO.md.
+  var rttSamples = [];          // one-way latency samples (ms) from the probe
+  var pingSends = {};           // seq -> send timestamp (host, awaiting pong)
+  var pingSeq = 0;              // host ping sequence counter
+  var calibrating = false;      // true while the pre-match probe is running
+  var probeDeadline = 0;        // ms timestamp; past this we finalize anyway
+  var probeDone = false;        // guard so finishLatencyProbe runs once
+
 var localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   var localInputs = {};     // live frame -> {p1:byte, p2:byte}
   var peerInputs = {};      // live frame -> {p1:byte, p2:byte}
@@ -609,19 +625,19 @@ function handleReliableMessage(raw) {
           }
           var fullRom = partsArr.join('');
           romReceive = null;
-          try {
+try {
             cfg.guest.loadRom(fullRom, msg.name);
             sendReliable({ type: 'ready' });
             dbg('ready sent after loading ROM (' + fullRom.length + ' bytes)');
             setState('syncing');
-            // The guest never receives its own 'ready' message (only the host
-            // does), so it must bootstrap its own lockstep state here or it
-            // will stay unready forever: GG.isReady() remains false, the
-            // emulator holds/never renders, and the guest freezes on a black
-            // screen while the host plays.
-            becomeReady();
-            setState('playing');
-            if (cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
+            // The guest now WAITS for the host's 'probe-done' (which carries
+            // the agreed INPUT_DELAY) before calling becomeReady(). The host
+            // runs the pre-match RTT latency probe after it receives our
+            // 'ready', then ships 'probe-done' so BOTH sides start playing
+            // with the identical delay window. (Older code self-bootstrapped
+            // into playing here, but that started lockstep before the host and
+            // left the guest stuck at ~50 FPS because its INPUT_DELAY never
+            // matched the host's.)
           } catch (e) {
             dbg('ROM load failed: ' + (e && e.message));
             setState('error');
@@ -632,12 +648,39 @@ function handleReliableMessage(raw) {
       return;
     }
 
-    if (msg.type === 'ready') {
+if (msg.type === 'ready') {
       dbg('ready received');
-      becomeReady();
-      setState('playing');
-      if (role === 'host' && cfg.host && cfg.host.onStart) cfg.host.onStart();
-      if (role === 'guest' && cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
+      if (role === 'host') {
+        // Host has both sides' ROM. Acknowledge the guest's ready, then run the
+        // pre-match RTT latency probe so the two sides agree on an INPUT_DELAY
+        // before starting gameplay (this is what keeps FPS at 60 on a real
+        // network — see finishLatencyProbe). The guest starts playing when it
+        // receives 'probe-done'.
+        sendReliable({ type: 'ready' });
+        startLatencyProbe(true);
+      } else {
+        // Guest: don't becomeReady here — wait for the host's 'probe-done'
+        // (which carries the agreed INPUT_DELAY) so both sides start with the
+        // SAME delay window. The old code self-bootstrapped into playing here,
+        // which started lockstep before the host, but the pre-match probe now
+        // gates both sides on the same calibration.
+      }
+      return;
+    } else if (msg.type === 'ping') {
+      // Guest answers the host's ping so the host can measure the round-trip.
+      sendReliable({ type: 'pong', seq: msg.seq });
+      dbg('pong sent for ping seq=' + msg.seq);
+      return;
+    } else if (msg.type === 'pong') {
+      // Host: one round-trip sample (the guest echoed our ping).
+      if (role === 'host') handlePong(msg.seq);
+      return;
+    } else if (msg.type === 'probe-done') {
+      // Guest adopts the host's measured delay so BOTH sides lockstep with the
+      // identical INPUT_DELAY, then starts playing.
+      var agreedDelay = (typeof msg.delay === 'number') ? msg.delay : INPUT_DELAY;
+      finishLatencyProbe(agreedDelay);
+      return;
     } else if (msg.type === 'chat') {
       if (GG.onChat) GG.onChat(msg.from === 'me' ? 'me' : 'peer', msg.text || '');
     }
@@ -745,6 +788,93 @@ var rom = cfg.host.romBytes;
     }
   }
 
+  // ---- Pre-match RTT latency probe (restores 60 FPS) ----
+  // The in-play adaptive tuner (maybeTuneDelay) only grows the render delay
+  // AFTER misses accumulate, and at ~50 FPS the miss rate (~17%) sits just
+  // below the old 20% growth threshold, so it never adapts and the game stays
+  // permanently stuck at 50 FPS. To fix this we calibrate the input delay UP
+  // FRONT: after the ROM handshake the host pings the guest over the reliable
+  // channel, measures one-way latency, and both sides agree on an INPUT_DELAY
+  // that covers the live RTT so GG.step() never drops a frame in flight. The
+  // in-play adapter then only corrects drift. See TODO.md.
+
+  function sendPing() {
+    var seq = ++pingSeq;
+    pingSends[seq] = Date.now();
+    sendReliable({ type: 'ping', seq: seq });
+  }
+
+  // One-way latency samples (ms) collected by the probe. Uses the 95th
+  // percentile so occasional spikes don't force an over-large delay, plus one
+  // frame of safety margin. Capped to [INPUT_DELAY_MIN, INPUT_DELAY_MAX].
+  function computeAdaptiveDelay() {
+    if (!rttSamples.length) return INPUT_DELAY_MIN;
+    var sorted = rttSamples.slice().sort(function (a, b) { return a - b; });
+    var p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+    var frames = Math.ceil(p95 / 16.67) + 1;
+    return Math.max(INPUT_DELAY_MIN, Math.min(INPUT_DELAY_MAX, frames));
+  }
+
+  // Host sample: a guest 'pong' has arrived for a ping we sent.
+  function handlePong(seq) {
+    var t0 = pingSends[seq];
+    if (t0) {
+      var oneWay = (Date.now() - t0) / 2;
+      rttSamples.push(oneWay);
+      delete pingSends[seq];
+    }
+    // All pings answered (or the deadline passed) → finalize with our samples.
+    var allDone = Object.keys(pingSends).length === 0;
+    if (role === 'host' && (allDone || Date.now() > probeDeadline)) {
+      finishLatencyProbe(null);
+    }
+  }
+
+  // Kick off the pre-match probe. Only the host initiates (sends pings); the
+  // guest participates by answering each ping. fromHost=false is kept for
+  // symmetry / future use.
+  function startLatencyProbe(fromHost) {
+    calibrating = true;
+    probeDone = false;
+    rttSamples = [];
+    pingSends = {};
+    pingSeq = 0;
+    probeDeadline = Date.now() + 1500;
+    dbg('latency probe started (fromHost=' + !!fromHost + ')');
+    if (fromHost) {
+      for (var i = 0; i < 5; i++) sendPing();
+      // Fallback so a lost pong never hangs the match: finalize with whatever
+      // samples we have after a grace period.
+      setTimeout(function () {
+        if (role === 'host' && !probeDone) finishLatencyProbe(null);
+      }, 2000);
+    }
+  }
+
+  // Finalize the probe and start playing. delay is the peer-agreed INPUT_DELAY
+  // (the guest receives it via 'probe-done'); when null the host computes it
+  // from its own RTT samples and ships it to the guest so both match.
+  function finishLatencyProbe(delay) {
+    if (probeDone) return;
+    probeDone = true;
+    calibrating = false;
+    if (typeof delay === 'number') {
+      INPUT_DELAY = delay;
+    } else {
+      INPUT_DELAY = computeAdaptiveDelay();
+      // Host computed the delay — tell the guest so both sides lockstep with
+      // the IDENTICAL INPUT_DELAY (critical: becomeReady seeds 0..INPUT_DELAY).
+      if (role === 'host' && dcReliable && dcReliable.readyState === 'open') {
+        sendReliable({ type: 'probe-done', delay: INPUT_DELAY });
+      }
+    }
+    dbg('latency probe done: INPUT_DELAY=' + INPUT_DELAY + ' frames');
+    becomeReady();
+    setState('playing');
+    if (role === 'host' && cfg.host && cfg.host.onStart) cfg.host.onStart();
+    if (role === 'guest' && cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
+  }
+
   // ---- Public API (identical to the WebSocket version) ----
 
   GG.init = function (c) {
@@ -843,6 +973,10 @@ pendingIce = [];
     localCandidates = [];
     remoteCandidates = [];
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
+    calibrating = false;
+    probeDone = false;
+    rttSamples = [];
+    pingSends = {};
   }
 
 function endSession(msg, notifyPeer) {
@@ -925,7 +1059,7 @@ function endSession(msg, notifyPeer) {
   };
 
 // Periodically re-evaluate the render lag based on the peer-input miss rate.
-  // If we've been missing inputs frequently (>20% over the window), the buffer
+  // If we've been missing inputs frequently (>10% over the window), the buffer
   // is too small for the live RTT/jitter — grow it. Growth is monotonic-safe:
   // we advance nextFrame by the same amount so renderFrame (=nextFrame -
   // measuredDelay) never moves backward and the emulator never re-computes an
@@ -934,11 +1068,17 @@ function endSession(msg, notifyPeer) {
   // skip a frame number, which also desyncs lockstep. Starting from a modest
   // INPUT_DELAY and only growing trades a little extra lag for guaranteed
   // determinism on any link.
-  var DELAY_WINDOW = 60;      // re-tune after this many sampled frames
+  //
+  // NOTE: the threshold was lowered from 20%->10% and the window from 60->30
+  // frames. At ~50 FPS the miss rate (~17%) sat just below the old 20% gate,
+  // so the tuner NEVER grew the delay and the game stayed permanently stuck at
+  // 50 FPS. The pre-match RTT probe now nails the correct starting delay, but
+  // this lower hysteresis lets the in-play adapter still correct drift quickly.
+  var DELAY_WINDOW = 30;      // re-tune after this many sampled frames
   function maybeTuneDelay(clean) {
     if (delaySamples < DELAY_WINDOW) return;
     var missRate = delayMisses / delaySamples;
-    if (missRate > 0.20 && measuredDelay < INPUT_DELAY_MAX) {
+    if (missRate > 0.10 && measuredDelay < INPUT_DELAY_MAX) {
       measuredDelay++;
       // Advance the LIVE pointer so the RENDER pointer stays monotonic — the
       // peer input for the new, deeper render frame is already in flight.
