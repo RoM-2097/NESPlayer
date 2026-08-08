@@ -103,6 +103,12 @@ var STALL_TIMEOUT = 3000;
   // on real networks where candidates can arrive before the SDP offer/answer.
 var pendingIce = [];
   var iceFailTimer = null;
+  // ICE candidate diagnostics for the debug panel. Tracking the candidate
+  // types (host / srflx / relay) and how many were exchanged on each side
+  // reveals whether a NAT/firewall is blocking P2P (no relay candidate) or
+  // whether the TURN relay itself is unreachable (no relay candidates at all).
+  var localCandidates = [];   // { type, proto } as gathered by onicecandidate
+  var remoteCandidates = [];  // { type, proto } as received via signaling
 
   // ---- Debug window instrumentation ----
   // A timestamped, auto-trimmed event ring buffer describing every step of the
@@ -155,10 +161,23 @@ var pendingIce = [];
       iceState: pc ? pc.iceConnectionState : 'none',
       dcReliable: chState(dcReliable),
       dcInput: chState(dcInput),
-      pendingIce: pendingIce.length,
+pendingIce: pendingIce.length,
       romBytes: (role === 'host' && cfg.host && cfg.host.romBytes) ? cfg.host.romBytes.length : null,
-      hasNes: !!(role === 'host' && cfg.host && cfg.host.nes) || !!(role === 'guest' && cfg.guest && cfg.guest.nes)
+      hasNes: !!(role === 'host' && cfg.host && cfg.host.nes) || !!(role === 'guest' && cfg.guest && cfg.guest.nes),
+      localHost: countType(localCandidates, 'host'),
+      localSrflx: countType(localCandidates, 'srflx'),
+      localRelay: countType(localCandidates, 'relay'),
+      remoteHost: countType(remoteCandidates, 'host'),
+      remoteSrflx: countType(remoteCandidates, 'srflx'),
+      remoteRelay: countType(remoteCandidates, 'relay')
     };
+  }
+
+  // Count candidates of a given type in a candidate array (for the debug panel).
+  function countType(arr, type) {
+    var n = 0;
+    for (var i = 0; i < arr.length; i++) if (arr[i].type === type) n++;
+    return n;
   }
 
   // ---- Connection-establishment helpers ----
@@ -309,6 +328,9 @@ function addIceCandidate(candidate) {
       return;
     }
     try {
+      var ct = candidateType(candidate);
+      remoteCandidates.push(ct);
+      dbg('remote ice candidate: ' + ct.type + '/' + ct.proto + ' addr=' + (candidate.address || candidate.ip || '?') + ':' + candidate.port);
       pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function (e) {
         console.warn('[nesplayer] ICE candidate rejected:', e);
         dbg('ice candidate rejected: ' + (e && e.message));
@@ -344,9 +366,17 @@ function addIceCandidate(candidate) {
     });
   }
 
-  function handleIce(from, candidate) {
+function handleIce(from, candidate) {
     if (!pc) return;
     addIceCandidate(candidate);
+  }
+
+  // Classify a candidate by its type ('host' | 'srflx' | 'prflx' | 'relay')
+  // and transport protocol for the debug panel.
+  function candidateType(cand) {
+    var type = cand.type || 'unknown';
+    var proto = cand.protocol || '?';
+    return { type: type, proto: proto };
   }
 
   // ---- WebRTC peer connection ----
@@ -368,9 +398,14 @@ function initPeer(offerer) {
 pc = new RTCPeerConnection(cfgRTC);
     dbg('RTCPeerConnection created (offerer=' + offerer + ')');
 
-    pc.onicecandidate = function (e) {
-      if (e.candidate && socket && socket.connected) {
-        socket.emit('signal', { candidate: e.candidate });
+pc.onicecandidate = function (e) {
+      if (e.candidate) {
+        var ct = candidateType(e.candidate);
+        localCandidates.push(ct);
+        dbg('local ice candidate: ' + ct.type + '/' + ct.proto + ' addr=' + (e.candidate.address || e.candidate.ip || '?') + ':' + e.candidate.port);
+        if (socket && socket.connected) {
+          socket.emit('signal', { candidate: e.candidate });
+        }
       }
     };
 pc.oniceconnectionstatechange = function () {
@@ -756,6 +791,8 @@ latestPeer = null;
 pendingIce = [];
     iceFailTimer = null;
     romReceive = null;
+    localCandidates = [];
+    remoteCandidates = [];
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   }
 
