@@ -1136,6 +1136,131 @@ body.no-scroll { overflow: hidden; }
   text-shadow: 0 0 14px rgba(63, 224, 255, 0.5);
 }
 
+/* ---------- Netplay debug window ---------- */
+/* A collapsible panel inside the netplay modal that surfaces the live sync
+   state (ICE, data channels, ROM transfer, ready handshake) so a stubborn
+   "sync ROM" freeze can be traced to the exact stage that never completes. */
+.netplay-debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--glass);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.netplay-debug-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-hi);
+  background: var(--glass-strong);
+}
+.netplay-debug-toggle.is-open {
+  color: var(--cyan);
+  border-color: rgba(63, 224, 255, 0.4);
+  background: rgba(63, 224, 255, 0.06);
+}
+.netplay-debug-toggle__icon { font-size: 14px; }
+.netplay-debug-toggle__chevron {
+  margin-left: auto;
+  font-size: 11px;
+  transition: transform 0.2s ease;
+}
+.netplay-debug-toggle.is-open .netplay-debug-toggle__chevron { transform: rotate(180deg); }
+
+.netplay-debug {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.28);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.netplay-debug[hidden] { display: none; }
+.netplay-debug__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.netplay-debug__title {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.netplay-debug__hint { font-size: 10.5px; color: var(--text-faint); }
+
+.netplay-debug__grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 5px;
+  margin-bottom: 10px;
+}
+.netplay-debug__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+}
+.netplay-debug__key {
+  color: var(--text-faint);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.netplay-debug__val {
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 700;
+  color: var(--text);
+  text-align: right;
+  word-break: break-word;
+}
+.netplay-debug__val.is-ok { color: var(--green); }
+.netplay-debug__val.is-bad { color: #ffb3be; }
+.netplay-debug__val.is-live { color: var(--cyan); }
+
+.netplay-debug__loghead { margin-bottom: 6px; }
+.netplay-debug__log {
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 8px;
+}
+.netplay-debug__log-empty {
+  color: var(--text-faint);
+  text-align: center;
+  padding: 10px 0;
+}
+.netplay-debug__line {
+  display: flex;
+  gap: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.netplay-debug__line-time { color: var(--text-faint); flex: none; }
+.netplay-debug__line-ms { color: var(--text-faint); flex: none; min-width: 34px; text-align: right; }
+.netplay-debug__line-msg { color: var(--text-dim); }
+.netplay-debug__line.is-bad .netplay-debug__line-msg { color: #ffb3be; }
+
 /* ---------- Netplay chat ---------- */
 .netplay-chat {
   margin-top: 4px;

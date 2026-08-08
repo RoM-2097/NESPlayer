@@ -96,6 +96,63 @@ var STALL_TIMEOUT = 3000;
 var pendingIce = [];
   var iceFailTimer = null;
 
+  // ---- Debug window instrumentation ----
+  // A timestamped, auto-trimmed event ring buffer describing every step of the
+  // netplay handshake (socket, ICE, data channels, ROM transfer, ready). The
+  // app surfaces this in a debug panel inside the netplay modal so a stubborn
+  // "sync ROM" freeze can be traced to the exact stage that never completes.
+  var DEBUG_LOG_MAX = 400;
+  var debugLog = [];
+  var debugSeq = 0;
+
+  function dbg(msg) {
+    var entry = {
+      seq: debugSeq++,
+      t: Date.now(),
+      ms: (Date.now() - (debugLastT || Date.now())),
+      msg: String(msg)
+    };
+    debugLastT = entry.t;
+    debugLog.push(entry);
+    if (debugLog.length > DEBUG_LOG_MAX) debugLog.splice(0, debugLog.length - DEBUG_LOG_MAX);
+    if (GG.onDebug) {
+      try { GG.onDebug(entry); } catch (e) { /* ignore */ }
+    }
+  }
+  var debugLastT = 0;
+
+  // Snapshot of everything the debug panel needs to show the live state.
+  function debugInfo() {
+    function chState(ch) {
+      if (!ch) return 'none';
+      return ch.readyState;
+    }
+    return {
+      role: role,
+      state: state,
+      active: active,
+      romReady: romReady,
+      player: player,
+      room: room,
+      frame: frame,
+      nextFrame: nextFrame,
+      inputDelay: INPUT_DELAY,
+      peerInputs: Object.keys(peerInputs).length,
+      localInputs: Object.keys(localInputs).length,
+      latestPeer: latestPeer ? { p1: latestPeer.p1, p2: latestPeer.p2 } : null,
+      renderPeer: renderPeer ? { p1: renderPeer.p1, p2: renderPeer.p2 } : null,
+      lastStepAge: lastStep ? (Date.now() - lastStep) : null,
+      socketConnected: !!(socket && socket.connected),
+      pcState: pc ? pc.connectionState : 'none',
+      iceState: pc ? pc.iceConnectionState : 'none',
+      dcReliable: chState(dcReliable),
+      dcInput: chState(dcInput),
+      pendingIce: pendingIce.length,
+      romBytes: (role === 'host' && cfg.host && cfg.host.romBytes) ? cfg.host.romBytes.length : null,
+      hasNes: !!(role === 'host' && cfg.host && cfg.host.nes) || !!(role === 'guest' && cfg.guest && cfg.guest.nes)
+    };
+  }
+
   // ---- Connection-establishment helpers ----
 
   function setState(s) {
@@ -190,23 +247,28 @@ var pendingIce = [];
       toast('Signaling error: ' + e.message, 'error');
       return;
     }
-    socket.on('connect', function () {
+socket.on('connect', function () {
+      dbg('socket connected to ' + url);
       if (onReady) onReady();
     });
     socket.on('connect_error', function () {
+      dbg('socket connect_error');
       if (state === 'connecting' || state === 'error') {
         setState('error');
         toast('Signaling server unreachable', 'error');
       }
     });
     socket.on('signal', function (msg) {
+      dbg('socket signal recv: ' + (msg && msg.data && msg.data.sdp ? 'sdp' : (msg && msg.data && msg.data.candidate ? 'ice' : '?')));
       handleSignal(msg);
     });
     socket.on('peer-joined', function () {
+      dbg('socket peer-joined (role=' + role + ')');
       // Host: guest is here → start the WebRTC offer.
       if (role === 'host') startHostPeer();
     });
     socket.on('peer-left', function () {
+      dbg('socket peer-left');
       endSession('Player disconnected', true);
     });
   }
@@ -229,31 +291,36 @@ function flushPendingIce() {
     }
   }
 
-  function addIceCandidate(candidate) {
+function addIceCandidate(candidate) {
     if (!pc) return;
     // If the remote description hasn't been set yet, addIceCandidate() throws
     // InvalidStateError. Buffer it and flush after the description is applied.
     if (!pc.remoteDescription) {
       pendingIce.push(candidate);
+      dbg('ice buffered (no remote desc yet; pending=' + pendingIce.length + ')');
       return;
     }
     try {
       pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function (e) {
         console.warn('[nesplayer] ICE candidate rejected:', e);
+        dbg('ice candidate rejected: ' + (e && e.message));
       });
     } catch (e) {
       console.warn('[nesplayer] ICE candidate error:', e);
+      dbg('ice candidate error: ' + (e && e.message));
     }
   }
 
   function handleSdp(from, data) {
     if (!pc) return;
     var desc = new RTCSessionDescription(data.sdp);
+    dbg('sdp recv: ' + desc.type + ' (len=' + String(data.sdp && data.sdp.sdp ? data.sdp.sdp.length : 0) + ')');
     pc.setRemoteDescription(desc).then(function () {
       if (desc.type === 'offer') {
         return pc.createAnswer().then(function (ans) {
           return pc.setLocalDescription(ans);
         }).then(function () {
+          dbg('sdp answer sent');
           if (socket && socket.connected) socket.emit('signal', { sdp: pc.localDescription });
         });
       }
@@ -263,6 +330,7 @@ function flushPendingIce() {
       flushPendingIce();
     }).catch(function (e) {
       console.error('[nesplayer] SDP error:', e);
+      dbg('sdp error: ' + (e && e.message));
       setState('error');
       toast('WebRTC negotiation failed', 'error');
     });
@@ -289,7 +357,8 @@ function initPeer(offerer) {
         { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
       ]
     };
-    pc = new RTCPeerConnection(cfgRTC);
+pc = new RTCPeerConnection(cfgRTC);
+    dbg('RTCPeerConnection created (offerer=' + offerer + ')');
 
     pc.onicecandidate = function (e) {
       if (e.candidate && socket && socket.connected) {
@@ -299,6 +368,7 @@ function initPeer(offerer) {
 pc.oniceconnectionstatechange = function () {
       if (!pc) return;
       var st = pc.iceConnectionState;
+      dbg('ice state: ' + st);
       if (st === 'connected' || st === 'completed') {
         // ICE succeeded — clear any pending failure timer.
         iceFailTimer = null;
@@ -333,17 +403,19 @@ pc.oniceconnectionstatechange = function () {
       }
     };
 
-    if (offerer) {
+if (offerer) {
       // Host creates the reliable + input channels.
       dcReliable = pc.createDataChannel('reliable', { ordered: true });
       dcInput = pc.createDataChannel('input', {
         ordered: false,
         maxRetransmits: 0
       });
+      dbg('data channels created (reliable + input)');
       wireChannels();
     } else {
       // Guest waits for the host's channels.
       pc.ondatachannel = function (e) {
+        dbg('ondatachannel: ' + e.channel.label);
         if (e.channel.label === 'reliable') {
           dcReliable = e.channel;
           wireReliable();
@@ -363,8 +435,15 @@ pc.oniceconnectionstatechange = function () {
   function wireReliable() {
     if (!dcReliable) return;
     dcReliable.onopen = function () {
+      dbg('reliable channel open');
       // Both channels must be open before starting gameplay exchange.
       maybePeerReady();
+    };
+    dcReliable.onclose = function () {
+      dbg('reliable channel closed');
+    };
+    dcReliable.onerror = function (e) {
+      dbg('reliable channel error');
     };
     dcReliable.onmessage = function (e) {
       handleReliableMessage(e.data);
@@ -385,12 +464,19 @@ pc.oniceconnectionstatechange = function () {
     }
   }
 
-  function wireInput() {
+function wireInput() {
     if (!dcInput) return;
     dcInput.onopen = function () {
+      dbg('input channel open');
       maybePeerReady();
       // Recover any seed inputs dropped before this channel opened.
       if (romReady) resendPendingInputs();
+    };
+    dcInput.onclose = function () {
+      dbg('input channel closed');
+    };
+    dcInput.onerror = function (e) {
+      dbg('input channel error');
     };
     dcInput.onmessage = function (e) {
       handleInputBinary(e.data);
@@ -401,10 +487,12 @@ pc.oniceconnectionstatechange = function () {
     var msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
     if (msg.type === 'rom') {
+      dbg('rom message received (role=' + role + ')');
       if (role === 'guest' && cfg.guest && cfg.guest.loadRom) {
         try {
           cfg.guest.loadRom(msg.bytes, msg.name);
           sendReliable({ type: 'ready' });
+          dbg('ready sent after loading ROM');
           setState('syncing');
           // The guest never receives its own 'ready' message (only the host
           // does), so it must bootstrap its own lockstep state here or it
@@ -415,11 +503,13 @@ pc.oniceconnectionstatechange = function () {
           setState('playing');
           if (cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
         } catch (e) {
+          dbg('ROM load failed: ' + (e && e.message));
           setState('error');
           toast('ROM load failed: ' + e.message, 'error');
         }
       }
     } else if (msg.type === 'ready') {
+      dbg('ready received');
       becomeReady();
       setState('playing');
       if (role === 'host' && cfg.host && cfg.host.onStart) cfg.host.onStart();
@@ -448,7 +538,7 @@ pc.oniceconnectionstatechange = function () {
     }
   }
 
-  function maybePeerReady() {
+function maybePeerReady() {
     // Both channels open → both sides are connected P2P.
     if (dcReliable && dcInput &&
         dcReliable.readyState === 'open' && dcInput.readyState === 'open') {
@@ -463,30 +553,37 @@ pc.oniceconnectionstatechange = function () {
             hostNes.running = true;
           }
         } catch (e) { /* ignore */ }
+        dbg('both channels open → sending ROM (' + cfg.host.romBytes.length + ' bytes, name=' + (cfg.host.romName || 'game.nes') + ')');
         sendReliable({
           type: 'rom',
           name: cfg.host.romName || 'game.nes',
           bytes: cfg.host.romBytes
         });
+      } else if (role === 'host') {
+        dbg('both channels open but host has NO romBytes — cannot send ROM');
       } else if (role === 'guest') {
-        // Guest has no ROM yet; it waits for the host's 'rom' message.
+        dbg('both channels open (guest) — waiting for host rom');
       }
     }
   }
 
   function startHostPeer() {
+    dbg('startHostPeer: creating offer');
     initPeer(true);
     pc.createOffer().then(function (offer) {
       return pc.setLocalDescription(offer);
     }).then(function () {
+      dbg('offer sent');
       if (socket && socket.connected) socket.emit('signal', { sdp: pc.localDescription });
     }).catch(function (e) {
       console.error('[nesplayer] offer error:', e);
+      dbg('offer error: ' + (e && e.message));
       setState('error');
     });
   }
 
   function becomeReady() {
+    dbg('becomeReady() — transitioning to playing');
     romReady = true;
     frame = 0;
     nextFrame = INPUT_DELAY;
@@ -512,12 +609,13 @@ pc.oniceconnectionstatechange = function () {
   GG.open = function () { if (GG.onOpen) GG.onOpen(); };
   GG.close = function () { GG.disconnect(); if (GG.onClose) GG.onClose(); };
 
-  GG.createRoom = function (url) {
+GG.createRoom = function (url) {
     var sUrl = url || GG.defaultUrl || defaultSignalingUrl();
     if (!sUrl) { setState('error'); toast('No signaling server URL configured', 'error'); return; }
     connectSignaling(sUrl, function () {
       socket.emit('create-room', function (res) {
         if (!res || !res.ok) {
+          dbg('create-room failed: ' + (res && res.error));
           setState('error');
           toast(res && res.error ? res.error : 'Could not create room', 'error');
           return;
@@ -527,6 +625,7 @@ pc.oniceconnectionstatechange = function () {
         role = 'host';
         active = true;
         setState('waiting');
+        dbg('room created: ' + room + ' (player ' + player + ')');
         if (GG.onRoomCreated) GG.onRoomCreated(room);
       });
     });
@@ -538,6 +637,7 @@ pc.oniceconnectionstatechange = function () {
     connectSignaling(sUrl, function () {
       socket.emit('join-room', { room: code }, function (res) {
         if (!res || !res.ok) {
+          dbg('join-room failed: ' + (res && res.error));
           setState('error');
           toast(res && res.error ? res.error : 'Could not join room', 'error');
           return;
@@ -547,6 +647,7 @@ pc.oniceconnectionstatechange = function () {
         role = 'guest';
         active = true;
         setState('waiting');
+        dbg('joined room: ' + room + ' (player ' + player + ')');
         // Guest must create its RTCPeerConnection now so pc.ondatachannel is
         // registered before the host's SDP offer arrives. Without this, the
         // host's offer hits `if (!pc) return;` and is dropped, the peer never
@@ -595,7 +696,8 @@ latestPeer = null;
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   }
 
-  function endSession(msg, notifyPeer) {
+function endSession(msg, notifyPeer) {
+    dbg('endSession: ' + (msg || 'Netplay ended') + ' (notifyPeer=' + !!notifyPeer + ')');
     if (notifyPeer) {
       try { sendReliable({ type: 'peer-left' }); } catch (e) { /* ignore */ }
     }
@@ -608,6 +710,7 @@ latestPeer = null;
   }
 
   function bailLockstep() {
+    dbg('bailLockstep — resuming single-player (was holding for sync/input)');
     romReady = false;
     resumeLocalEmulator();
     setState('idle');
@@ -621,6 +724,7 @@ latestPeer = null;
     if (!active || !romReady) return false;
 
     if (Date.now() - lastStep > STALL_TIMEOUT) {
+      dbg('STALL_TIMEOUT hit — bailing to single-player');
       toast('Netplay stalled — resuming single-player', 'error');
       bailLockstep();
       return true;
@@ -687,13 +791,21 @@ latestPeer = null;
     }
   };
 
-  GG.isActive = function () { return active; };
+GG.isActive = function () { return active; };
   GG.isReady = function () { return active && romReady; };
   GG.getRole = function () { return role; };
   GG.getState = function () { return state; };
   GG.getFrame = function () { return frame; };
 
+  // Debug window accessors. The app polls getDebugInfo() while the debug panel
+  // is open and appends getDebugLog() entries to the on-screen log.
+  GG.getDebugInfo = function () { return debugInfo(); };
+  GG.getDebugLog = function () {
+    return debugLog.slice();
+  };
+
   GG.disconnect = function () {
+    dbg('disconnect() called');
     try { sendReliable({ type: 'leave' }); } catch (e) { /* ignore */ }
     if (dcReliable) { try { dcReliable.close(); } catch (e) {} }
     if (dcInput) { try { dcInput.close(); } catch (e) {} }

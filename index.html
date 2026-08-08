@@ -421,6 +421,27 @@ loop:
         <span id="netplayRoomCodeDisplay" class="netplay-room-code">····</span>
       </div>
 
+      <!-- Netplay debug window: surfaces the live sync state (ICE, channels,
+           ROM transfer, ready handshake) so a stubborn "sync ROM" freeze can
+           be traced to the exact stage that never completes. -->
+      <div id="netplayDebugToggle" class="netplay-debug-toggle" role="button" tabindex="0" aria-expanded="false" title="Toggle the netplay sync debug panel">
+        <span id="netplayDebugToggleIcon" class="netplay-debug-toggle__icon">🐞</span>
+        <span id="netplayDebugToggleLabel">Netplay Debug</span>
+        <span class="netplay-debug-toggle__chevron" aria-hidden="true">▾</span>
+      </div>
+
+      <div id="netplayDebugPanel" class="netplay-debug" hidden>
+        <div class="netplay-debug__head">
+          <span class="netplay-debug__title">Sync state</span>
+          <span id="netplayDebugHint" class="netplay-debug__hint">Live · updates every 250ms</span>
+        </div>
+        <div id="netplayDebugGrid" class="netplay-debug__grid"></div>
+        <div class="netplay-debug__loghead">
+          <span class="netplay-debug__title">Event log</span>
+        </div>
+        <div id="netplayDebugLog" class="netplay-debug__log" aria-live="polite"></div>
+      </div>
+
       <div class="modal__foot">
         <button id="netplayDisconnect" class="btn btn--ghost" type="button">Disconnect</button>
       </div>

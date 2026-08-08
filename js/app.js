@@ -56,7 +56,9 @@ var cheatModalOpen = false;  // cheat modal active state
   var cheats = [];             // array of { addr, value, compare (or null), label }
   var cheatHookActive = false; // is the PRG-read cheat hook installed on nes.mmap.load?
   var originalMmapLoad = null; // original nes.mmap.load (restored when the hook is removed)
-  var netplayModalOpen = false; // netplay modal active state
+var netplayModalOpen = false; // netplay modal active state
+  var netplayDebugOpen = false; // netplay debug panel expanded state
+  var netplayDebugTimer = null; // polling interval for the debug panel grid
   var capturing = null;   // { nes, field, type } while waiting for a key/pad press
   var padCaptureActive = false;
 
@@ -124,10 +126,16 @@ btnControls: $('btnControls'),
     netplayStatus: $('netplayStatus'),
     netplayRoomBox: $('netplayRoomBox'),
     netplayRoomCodeDisplay: $('netplayRoomCodeDisplay'),
-    netplayDisconnect: $('netplayDisconnect'),
+netplayDisconnect: $('netplayDisconnect'),
     netplayChat: $('netplayChat'),
     netplayChatInput: $('netplayChatInput'),
     netplayChatSend: $('netplayChatSend'),
+    netplayDebugToggle: $('netplayDebugToggle'),
+    netplayDebugToggleLabel: $('netplayDebugToggleLabel'),
+    netplayDebugPanel: $('netplayDebugPanel'),
+    netplayDebugGrid: $('netplayDebugGrid'),
+    netplayDebugLog: $('netplayDebugLog'),
+    netplayDebugHint: $('netplayDebugHint'),
     btnBind: $('btnBind'),
     btnRecord: $('btnRecord'),
     recordIcon: $('recordIcon'),
@@ -1343,10 +1351,17 @@ function closeCheatModal() {
     return u;
   }
 
-  function openNetplayModal() {
+function openNetplayModal() {
     netplayModalOpen = true;
     els.netplayModal.hidden = false;
     document.body.classList.add('no-scroll');
+    // The debug panel starts collapsed each time the modal is opened.
+    netplayDebugOpen = false;
+    if (els.netplayDebugPanel) els.netplayDebugPanel.hidden = true;
+    if (els.netplayDebugToggle) {
+      els.netplayDebugToggle.classList.remove('is-open');
+      els.netplayDebugToggle.setAttribute('aria-expanded', 'false');
+    }
     // Restore a previously used server URL (upgrading ws:// -> wss:// on
     // HTTPS), or default to the page's own origin so wss:// is used
     // automatically on HTTPS hosts.
@@ -1359,18 +1374,143 @@ function closeCheatModal() {
 
   function closeNetplayModal() {
     netplayModalOpen = false;
+    // Stop the debug-grid poller when the modal closes.
+    if (netplayDebugOpen) closeNetplayDebug();
     els.netplayModal.hidden = true;
     document.body.classList.remove('no-scroll');
   }
 
-  // Set the status line in the netplay modal.
+// Set the status line in the netplay modal.
   function netplayStatus(msg, cls) {
     if (!els.netplayStatus) return;
     els.netplayStatus.textContent = msg;
     els.netplayStatus.className = 'netplay-status' + (cls ? ' ' + cls : '');
   }
 
-// This local player's number: host = Player 1, guest = Player 2. Outside
+  // ---- Netplay debug panel ----
+  // Collapsible diagnostics inside the netplay modal. It surfaces the live
+  // sync state (socket, ICE, data channels, ROM handshake, frame counters)
+  // and a timestamped event log from netplay.js so a "sync ROM" freeze can
+  // be traced to the exact stage that never completes.
+  function toggleNetplayDebug() {
+    if (netplayDebugOpen) closeNetplayDebug();
+    else openNetplayDebug();
+  }
+
+  function openNetplayDebug() {
+    netplayDebugOpen = true;
+    if (els.netplayDebugToggle) {
+      els.netplayDebugToggle.classList.add('is-open');
+      els.netplayDebugToggle.setAttribute('aria-expanded', 'true');
+    }
+    if (els.netplayDebugPanel) els.netplayDebugPanel.hidden = false;
+    // Render the full event log collected so far, then keep it live.
+    renderNetplayDebugLog();
+    renderNetplayDebugGrid();
+    if (!netplayDebugTimer) {
+      netplayDebugTimer = setInterval(renderNetplayDebugGrid, 250);
+    }
+  }
+
+  function closeNetplayDebug() {
+    netplayDebugOpen = false;
+    if (netplayDebugTimer) {
+      clearInterval(netplayDebugTimer);
+      netplayDebugTimer = null;
+    }
+    if (els.netplayDebugToggle) {
+      els.netplayDebugToggle.classList.remove('is-open');
+      els.netplayDebugToggle.setAttribute('aria-expanded', 'false');
+    }
+    if (els.netplayDebugPanel) els.netplayDebugPanel.hidden = true;
+  }
+
+  // Rebuild the live state grid from GG.getDebugInfo().
+  function renderNetplayDebugGrid() {
+    if (!els.netplayDebugGrid) return;
+    var GG = window.NESNetplay;
+    var info = (GG && GG.getDebugInfo) ? GG.getDebugInfo() : null;
+    if (!info) {
+      els.netplayDebugGrid.innerHTML = '<p class="netplay-debug__log-empty">Netplay module not loaded.</p>';
+      return;
+    }
+    var rows = [
+      ['Role', info.role || '—'],
+      ['State', info.state || '—'],
+      ['Active', info.active ? 'yes' : 'no'],
+      ['ROM ready', info.romReady ? 'yes' : 'no'],
+      ['Room', info.room || '—'],
+      ['Player', info.player !== null ? info.player : '—'],
+      ['Frame (render)', info.frame],
+      ['Next frame (live)', info.nextFrame],
+      ['Peer inputs', info.peerInputs],
+      ['Local inputs', info.localInputs],
+      ['Last step age (ms)', info.lastStepAge !== null ? info.lastStepAge : '—'],
+      ['Socket', info.socketConnected ? 'connected' : 'disconnected'],
+      ['PeerConnection', info.pcState || '—'],
+      ['ICE state', info.iceState || '—'],
+      ['Reliable channel', info.dcReliable || '—'],
+      ['Input channel', info.dcInput || '—'],
+      ['Buffered ICE', info.pendingIce],
+      ['ROM bytes (host)', info.romBytes !== null ? info.romBytes : '—'],
+      ['Has NES core', info.hasNes ? 'yes' : 'no']
+    ];
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+      var key = rows[i][0], val = rows[i][1];
+      var cls = '';
+      if (key === 'State' && (val === 'playing' || val === 'syncing')) cls = 'is-live';
+      else if (key === 'State' && val === 'error') cls = 'is-bad';
+      else if (key === 'ROM ready' && val === 'yes') cls = 'is-ok';
+      else if (key === 'Socket' && val === 'connected') cls = 'is-ok';
+      else if (key === 'Socket' && val === 'disconnected') cls = 'is-bad';
+      html += '<div class="netplay-debug__item"><span class="netplay-debug__key">' + key + '</span>' +
+              '<span class="netplay-debug__val ' + cls + '">' + val + '</span></div>';
+    }
+    els.netplayDebugGrid.innerHTML = html;
+  }
+
+  // Append a single event line to the debug log.
+  function appendNetplayDebugEntry(entry) {
+    if (!els.netplayDebugLog || !entry) return;
+    var empty = els.netplayDebugLog.querySelector('.netplay-debug__log-empty');
+    if (empty) empty.remove();
+    var line = document.createElement('div');
+    line.className = 'netplay-debug__line' + (entry.isBad ? ' is-bad' : '');
+    var t = document.createElement('span');
+    t.className = 'netplay-debug__line-time';
+    t.textContent = new Date(entry.t).toLocaleTimeString('en-US', { hour12: false });
+    var ms = document.createElement('span');
+    ms.className = 'netplay-debug__line-ms';
+    ms.textContent = (typeof entry.ms === 'number' ? entry.ms : 0) + 'ms';
+    var m = document.createElement('span');
+    m.className = 'netplay-debug__line-msg';
+    m.textContent = entry.msg || '';
+    // Keep the log bounded so it doesn't grow without limit.
+    if (els.netplayDebugLog.children.length > 200) {
+      els.netplayDebugLog.removeChild(els.netplayDebugLog.firstChild);
+    }
+    line.appendChild(t);
+    line.appendChild(ms);
+    line.appendChild(m);
+    els.netplayDebugLog.appendChild(line);
+    els.netplayDebugLog.scrollTop = els.netplayDebugLog.scrollHeight;
+  }
+
+  // Render the full captured event log (used when the panel is first opened).
+  function renderNetplayDebugLog() {
+    if (!els.netplayDebugLog) return;
+    var GG = window.NESNetplay;
+    var log = (GG && GG.getDebugLog) ? GG.getDebugLog() : [];
+    els.netplayDebugLog.innerHTML = '';
+    if (!log || !log.length) {
+      els.netplayDebugLog.innerHTML = '<p class="netplay-debug__log-empty">No netplay events yet. Create or join a room to see the sync trace.</p>';
+      return;
+    }
+    for (var i = 0; i < log.length; i++) appendNetplayDebugEntry(log[i]);
+  }
+
+  // This local player's number: host = Player 1, guest = Player 2. Outside
   // netplay there is only Player 1.
   function myPlayerNumber() {
     var GG = window.NESNetplay;
@@ -1448,10 +1588,14 @@ GG.onJoined = function (code) {
 // Incoming chat from the peer. The relay only ever forwards peer messages
     // (it never echoes), so 'from' is normally 'peer'; label it with the OTHER
     // player's number. If 'me' ever arrives it is labelled with our own number.
-    GG.onChat = function (from, text) {
+GG.onChat = function (from, text) {
       var peerNum = (myPlayerNumber() === 2) ? 1 : 2;
       var who = (from === 'peer') ? 'Player ' + peerNum : 'Player ' + myPlayerNumber();
       appendNetplayChat(who, text, from);
+    };
+    // Live debug-log feed from netplay.js. Each entry is { t, ms, msg, isBad }.
+    GG.onDebug = function (entry) {
+      appendNetplayDebugEntry(entry);
     };
 
 // Host/guest config. The host provides the loaded ROM bytes so the guest
@@ -2331,10 +2475,13 @@ els.netplayCreate.addEventListener('click', function () {
     els.netplayDisconnect.addEventListener('click', function () {
       if (window.NESNetplay) window.NESNetplay.disconnect();
     });
-    els.netplayChatSend.addEventListener('click', sendNetplayChat);
+els.netplayChatSend.addEventListener('click', sendNetplayChat);
     els.netplayChatInput.addEventListener('keydown', function (e) {
       if (e.code === 'Enter') { e.preventDefault(); sendNetplayChat(); }
     });
+    if (els.netplayDebugToggle) {
+      els.netplayDebugToggle.addEventListener('click', toggleNetplayDebug);
+    }
     els.btnBind.addEventListener('click', function () { openBindModal(); });
     els.btnCloseModal.addEventListener('click', closeBindModal);
     els.bindModal.addEventListener('click', function (e) {
