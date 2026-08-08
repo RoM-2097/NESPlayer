@@ -76,9 +76,21 @@
   var frame = 0;            // RENDER frame we are about to draw
   var nextFrame = 0;        // LIVE frame we capture/send next
 
-  // Delay window in frames. We render INPUT_DELAY frames behind the live
+// Delay window in frames. We render INPUT_DELAY frames behind the live
   // exchange so the peer's input for a frame has already arrived in flight.
-  var INPUT_DELAY = 2;
+  //
+  // A FIXED 2-frame delay only works on a low-latency link (LAN). Over the
+  // public internet the round-trip (often via a TURN relay) routinely exceeds
+  // 33ms, so the peer's input for the render frame has NOT arrived yet and
+  // step() holds the emulator — dropping below 60 FPS and glitching audio.
+  // The delay is therefore ADAPTIVE: we measure how often we had to wait for
+  // peer input and grow/shrink the render lag to cover the live RTT+jitter.
+  var INPUT_DELAY_MIN = 2;      // minimum render lag (fast LAN)
+  var INPUT_DELAY_MAX = 16;     // maximum render lag (~266ms) before we give up
+  var INPUT_DELAY = 4;          // starting delay (covers a typical internet RTT)
+  var measuredDelay = INPUT_DELAY; // current adaptive render lag in frames
+  var delayMisses = 0;          // frames where we HAD to wait for peer input
+  var delaySamples = 0;         // frames sampled since the last adjustment
 
 var localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   var localInputs = {};     // live frame -> {p1:byte, p2:byte}
@@ -643,7 +655,9 @@ function handleReliableMessage(raw) {
     if (data.frame === undefined) return;
     peerInputs[data.frame] = { p1: data.p1 >>> 0, p2: data.p2 >>> 0 };
     latestPeer = peerInputs[data.frame];
-    var min = frame - 4, max = nextFrame + INPUT_DELAY + 8;
+    // Prune the buffer to the live window. measuredDelay is adaptive, so the
+    // lookahead bound tracks the current render lag (not a hard-coded delay).
+    var min = frame - 4, max = nextFrame + Math.max(measuredDelay, INPUT_DELAY) + 8;
     for (var k in peerInputs) {
       var n = Number(k);
       if (n < min || n > max) delete peerInputs[k];
@@ -713,6 +727,11 @@ var rom = cfg.host.romBytes;
     dbg('becomeReady() — transitioning to playing');
     romReady = true;
     frame = 0;
+    // Start from the measured (adaptive) render delay; the lockstep loop will
+    // keep tuning it from here based on live peer-input arrival.
+    measuredDelay = INPUT_DELAY;
+    delayMisses = 0;
+    delaySamples = 0;
     nextFrame = INPUT_DELAY;
     localInputs = {};
     latestPeer = null;
@@ -868,21 +887,34 @@ function endSession(msg, notifyPeer) {
     sendFrameInput(nextFrame);
 
 // 2) The render frame's peer input must already be in flight — we send it
-    //    INPUT_DELAY frames ahead. WAIT for it so both cores ADVANCE IN
-    //    LOCKSTEP. If we rendered whenever the local setTimeout loop fired,
-    //    the two clients' independent loops would drift apart and the cores
-    //    would desync within seconds. Holding here (returning false) paces
-    //    both sides to the slower one while the 2-frame delay buffer absorbs
-    //    network jitter.
-    var renderFrame = nextFrame - INPUT_DELAY;
+    //    measuredDelay frames ahead. WAIT for it so both cores ADVANCE IN
+    //    LOCKSTEP.
+    //
+    //    ADAPTIVE BUFFER: on a low-latency LAN the peer input is nearly always
+    //    present (the fixed old delay of 2 frames suffices). Over the public
+    //    internet—especially through a TURN relay—the one-way latency routinely
+    //    exceeds 33ms, so a fixed 2-frame window means the render frame's peer
+    //    input has NOT arrived yet and step() holds, dropping below 60 FPS and
+    //    glitching audio. We therefore measure how often we miss and grow the
+    //    render lag to cover the live RTT+jitter. When we go a long stretch
+    //    without a miss, we steal a frame back to keep latency lower on links
+    //    that improve. This keeps FPS locked at 60 while minimising lag.
+    var renderFrame = nextFrame - measuredDelay;
     var peerIn = peerInputs[renderFrame];
     if (!peerIn) {
+      delayMisses++;
+      delaySamples++;
       // Peer's input for this frame hasn't arrived yet — HOLD (do not advance)
       // so we stay frame-locked. lastStep is intentionally NOT updated here,
       // so the stall timeout above still fires if the peer truly vanishes and
       // we degrade gracefully to single-player.
+      maybeTuneDelay(false);
       return false;
     }
+    // Input arrived in flight — register a clean sample and shrink the buffer
+    // opportunistically when we've been comfy for a while.
+    delaySamples++;
+    maybeTuneDelay(true);
     renderPeer = peerIn;
 
     // 3) Advance counters.
@@ -891,6 +923,36 @@ function endSession(msg, notifyPeer) {
     lastStep = Date.now();
     return true;
   };
+
+// Periodically re-evaluate the render lag based on the peer-input miss rate.
+  // If we've been missing inputs frequently (>20% over the window), the buffer
+  // is too small for the live RTT/jitter — grow it. Growth is monotonic-safe:
+  // we advance nextFrame by the same amount so renderFrame (=nextFrame -
+  // measuredDelay) never moves backward and the emulator never re-computes an
+  // already-rendered frame (which would desync the two cores). We deliberately
+  // do NOT shrink the buffer: shrinking would make renderFrame leap forward and
+  // skip a frame number, which also desyncs lockstep. Starting from a modest
+  // INPUT_DELAY and only growing trades a little extra lag for guaranteed
+  // determinism on any link.
+  var DELAY_WINDOW = 60;      // re-tune after this many sampled frames
+  function maybeTuneDelay(clean) {
+    if (delaySamples < DELAY_WINDOW) return;
+    var missRate = delayMisses / delaySamples;
+    if (missRate > 0.20 && measuredDelay < INPUT_DELAY_MAX) {
+      measuredDelay++;
+      // Advance the LIVE pointer so the RENDER pointer stays monotonic — the
+      // peer input for the new, deeper render frame is already in flight.
+      nextFrame++;
+      localInputs[nextFrame] = {
+        p1: maskToByte(localInput.p1),
+        p2: maskToByte(localInput.p2)
+      };
+      sendFrameInput(nextFrame);
+      dbg('adaptive delay: ' + measuredDelay + ' frames (miss=' + (missRate * 100).toFixed(0) + '%)');
+    }
+    delayMisses = 0;
+    delaySamples = 0;
+  }
 
   // Apply both players' DELAYED input for the current render frame so both
   // cores execute byte-identical inputs (controller 1 = host's frame-N input,

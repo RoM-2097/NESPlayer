@@ -15,17 +15,17 @@ both sides freeze on a black screen. The debug window will reveal exactly which
 stage is stuck.
 
 ## Tasks
-- [ ] `js/netplay.js`: add internal `dbg()` log ring buffer + `onDebug` callback.
-- [ ] `js/netplay.js`: instrument socket, PC/ICE, data-channel, ROM transfer,
+- [x] `js/netplay.js`: add internal `dbg()` log ring buffer + `onDebug` callback.
+- [x] `js/netplay.js`: instrument socket, PC/ICE, data-channel, ROM transfer,
       ready handshake, becomeReady, stall/bail, and endSession with `dbg(...)`.
-- [ ] `js/netplay.js`: expose `GG.getDebugInfo()` (live snapshot) and
+- [x] `js/netplay.js`: expose `GG.getDebugInfo()` (live snapshot) and
       `GG.getDebugLog()`.
-- [ ] `index.html`: add a collapsible debug panel inside `#netplayModal`
+- [x] `index.html`: add a collapsible debug panel inside `#netplayModal`
       (toggle button + state grid + scrolling event log).
-- [ ] `css/style.css`: style the netplay debug panel (monospace, dark, auto-trim).
-- [ ] `js/app.js`: add element refs, wire the toggle, set `GG.onDebug`, and add a
+- [x] `css/style.css`: style the netplay debug panel (monospace, dark, auto-trim).
+- [x] `js/app.js`: add element refs, wire the toggle, set `GG.onDebug`, and add a
       ~250 ms poller that renders `GG.getDebugInfo()` while the panel is open.
-- [ ] Verify: `node --check` on `js/netplay.js` and `js/app.js`.
+- [x] Verify: `node --check` on `js/netplay.js` and `js/app.js`.
 
 ## Verification
 - [ ] Two tabs create/join a room; open the debug window and confirm the stage
