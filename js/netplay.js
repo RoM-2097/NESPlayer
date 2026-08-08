@@ -327,10 +327,10 @@ function addIceCandidate(candidate) {
       dbg('ice buffered (no remote desc yet; pending=' + pendingIce.length + ')');
       return;
     }
-    try {
+try {
       var ct = candidateType(candidate);
       remoteCandidates.push(ct);
-      dbg('remote ice candidate: ' + ct.type + '/' + ct.proto + ' addr=' + (candidate.address || candidate.ip || '?') + ':' + candidate.port);
+      dbg('remote ice candidate: ' + ct.type + '/' + ct.proto + ' addr=' + ct.address + ':' + ct.port);
       pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function (e) {
         console.warn('[nesplayer] ICE candidate rejected:', e);
         dbg('ice candidate rejected: ' + (e && e.message));
@@ -371,12 +371,42 @@ function handleIce(from, candidate) {
     addIceCandidate(candidate);
   }
 
-  // Classify a candidate by its type ('host' | 'srflx' | 'prflx' | 'relay')
-  // and transport protocol for the debug panel.
+// Classify a candidate by its type ('host' | 'srflx' | 'prflx' | 'relay'),
+  // transport protocol, address and port for the debug panel.
+  //
+  // NOTE: When an RTCIceCandidate is sent THROUGH signaling (socket.io), it is
+  // JSON-serialized, which only keeps its OWN enumerable properties
+  // (candidate, sdpMid, sdpMLineIndex). The type/protocol/address/port are
+  // GETTERS on the prototype, so they are lost in transit — the peer sees
+  // "unknown/? addr=?:undefined". Those values are still present inside the SDP
+  // candidate string (e.g. "candidate:842163049 1 udp 2122260223 1.2.3.4 51234
+  // typ host"), so we PARSE the string to recover the real diagnostics.
   function candidateType(cand) {
-    var type = cand.type || 'unknown';
-    var proto = cand.protocol || '?';
-    return { type: type, proto: proto };
+    var type = cand && cand.type;
+    var proto = cand && cand.protocol;
+    var address = cand && (cand.address || cand.ip);
+    var port = cand && cand.port;
+    var s = cand && cand.candidate;
+    if (s) {
+      var parts = String(s).split(' ');
+      // SDP candidate layout (space-separated):
+      //   candidate:foundation component protocol priority address port typ type [...]
+      //   parts[0]=candidate:... parts[1]=foundation parts[2]=component
+      //   parts[3]=protocol parts[4]=priority parts[5]=address parts[6]=port
+      //   parts[7]="typ" parts[8]=type
+      if (parts.length >= 9) {
+        proto = parts[3] || proto;
+        address = parts[5] || address;
+        port = parts[6] || port;
+        type = parts[8] || type;
+      }
+    }
+    return {
+      type: type || 'unknown',
+      proto: proto || '?',
+      address: address || '?',
+      port: (port !== undefined && port !== null && port !== '') ? port : '?'
+    };
   }
 
   // ---- WebRTC peer connection ----
@@ -400,9 +430,9 @@ pc = new RTCPeerConnection(cfgRTC);
 
 pc.onicecandidate = function (e) {
       if (e.candidate) {
-        var ct = candidateType(e.candidate);
+var ct = candidateType(e.candidate);
         localCandidates.push(ct);
-        dbg('local ice candidate: ' + ct.type + '/' + ct.proto + ' addr=' + (e.candidate.address || e.candidate.ip || '?') + ':' + e.candidate.port);
+        dbg('local ice candidate: ' + ct.type + '/' + ct.proto + ' addr=' + ct.address + ':' + ct.port);
         if (socket && socket.connected) {
           socket.emit('signal', { candidate: e.candidate });
         }
