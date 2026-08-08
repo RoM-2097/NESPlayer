@@ -85,7 +85,9 @@
   // step() holds the emulator — dropping below 60 FPS and glitching audio.
   // The delay is therefore ADAPTIVE: we measure how often we had to wait for
   // peer input and grow/shrink the render lag to cover the live RTT+jitter.
-  var INPUT_DELAY_MIN = 2;      // minimum render lag (fast LAN)
+var INPUT_DELAY_MIN = 3;      // minimum render lag (fast LAN) — never below 3
+                                // frames so the peer input is almost always
+                                // already in flight for the render frame.
   var INPUT_DELAY_MAX = 16;     // maximum render lag (~266ms) before we give up
   var INPUT_DELAY = 4;          // starting delay (covers a typical internet RTT)
   var measuredDelay = INPUT_DELAY; // current adaptive render lag in frames
@@ -675,11 +677,25 @@ if (msg.type === 'ready') {
       // Host: one round-trip sample (the guest echoed our ping).
       if (role === 'host') handlePong(msg.seq);
       return;
-    } else if (msg.type === 'probe-done') {
+} else if (msg.type === 'probe-done') {
       // Guest adopts the host's measured delay so BOTH sides lockstep with the
       // identical INPUT_DELAY, then starts playing.
       var agreedDelay = (typeof msg.delay === 'number') ? msg.delay : INPUT_DELAY;
       finishLatencyProbe(agreedDelay);
+      return;
+    } else if (msg.type === 'reset') {
+      // A player pressed Reset. The peer reset its local core AND its lockstep
+      // state; do the same here so both sides restart from an identical frame 0.
+      // Without this the two cores would be reset to boot state while the
+      // netplay frame counters kept their pre-reset (high) values — step()
+      // would wait for an already-consumed peer input and freeze on a black
+      // screen. See resetLockstep().
+dbg('peer reset — re-syncing lockstep to frame 0');
+      var resetNes = null;
+      if (role === 'host' && cfg.host && cfg.host.nes) resetNes = cfg.host.nes;
+      else if (role === 'guest' && cfg.guest && cfg.guest.nes) resetNes = cfg.guest.nes;
+      resetCore(resetNes);
+      resetLockstep();
       return;
     } else if (msg.type === 'chat') {
       if (GG.onChat) GG.onChat(msg.from === 'me' ? 'me' : 'peer', msg.text || '');
@@ -780,8 +796,58 @@ var rom = cfg.host.romBytes;
     latestPeer = null;
     renderPeer = null;
     lastStep = Date.now();
-    // Seed our own buffered inputs for the delay window AND transmit them so
+// Seed our own buffered inputs for the delay window AND transmit them so
     // the peer has frames 0..INPUT_DELAY buffered before rendering starts.
+    for (var i = 0; i <= nextFrame; i++) {
+      localInputs[i] = { p1: 0, p2: 0 };
+      sendFrameInput(i);
+    }
+  }
+
+// Reset a jsnes core to its boot state AND re-request the RESET IRQ. The
+  // vendored jsnes NES.prototype.reset() zeroes the CPU/PPU/APU but does NOT
+  // re-request the RESET IRQ — only loadROM() (via the mapper's loadROM()) does
+  // that. Without it the CPU stays at PC=0x7FFF executing garbage and never
+  // drives the PPU to VBlank, so the next frame() falls into its infinite
+  // for(;;) loop forever (gray/black screen freeze). Re-requesting the RESET
+  // IRQ (the same spy loadROM uses) makes the CPU jump to the ROM's reset
+  // vector so rendering resumes normally. Must be used in BOTH netplay reset
+  // paths (GG.reset() and the 'reset' message handler) since netplay calls
+  // nes.reset() directly.
+  function resetCore(nesObj) {
+    if (!nesObj) return;
+    nesObj.reset();
+    if (nesObj.cpu && typeof nesObj.cpu.requestIrq === 'function' && nesObj.cpu.IRQ_RESET !== undefined) {
+      nesObj.cpu.requestIrq(nesObj.cpu.IRQ_RESET);
+    }
+  }
+
+  // Re-synchronize the lockstep state to frame 0 WITHOUT tearing the session
+  // down. Both sides must call this together (the resetting side calls it
+  // locally and sends a 'reset' message so the peer calls it too) so the two
+  // cores restart from an identical boot frame. If only the CORE is reset
+  // (nes.reset()) while nextFrame/peerInputs keep their pre-reset high values,
+  // GG.step() computes renderFrame = nextFrame - measuredDelay (a number whose
+  // peer input was long since pruned) and HOLDS forever — the classic
+  // freeze-on-a-black-screen after pressing Reset in netplay.
+  function resetLockstep() {
+    if (!active || !romReady) {
+      // Not in a live session — nothing to re-sync.
+      return;
+    }
+    dbg('resetLockstep — lockstep counters back to frame 0');
+    frame = 0;
+    measuredDelay = INPUT_DELAY;
+    delayMisses = 0;
+    delaySamples = 0;
+    nextFrame = INPUT_DELAY;
+    localInputs = {};
+    peerInputs = {};
+    latestPeer = null;
+    renderPeer = null;
+    lastStep = Date.now();
+    // Re-seed and re-transmit the fresh delay window so the peer has frames
+    // 0..INPUT_DELAY buffered again before rendering resumes.
     for (var i = 0; i <= nextFrame; i++) {
       localInputs[i] = { p1: 0, p2: 0 };
       sendFrameInput(i);
@@ -936,9 +1002,25 @@ GG.createRoom = function (url) {
     });
   };
 
-  GG.setLocalInput = function (state) {
+GG.setLocalInput = function (state) {
     localInput.p1 = state.p1 || new Array(8).fill(0);
     localInput.p2 = state.p2 || new Array(8).fill(0);
+  };
+
+  // Netplay-aware reset (called by app.js when the user presses Reset). In a
+  // live session this resets the local core, re-syncs the lockstep counters to
+  // frame 0, and tells the peer to do the same so both sides restart from an
+  // identical boot frame. Outside a session this is a no-op (app.js handles a
+  // plain single-player nes.reset() itself).
+GG.reset = function () {
+    if (!active || !romReady) return;
+    var localNes = null;
+    if (role === 'host' && cfg.host && cfg.host.nes) localNes = cfg.host.nes;
+    else if (role === 'guest' && cfg.guest && cfg.guest.nes) localNes = cfg.guest.nes;
+    resetCore(localNes);
+    // Reset the local lockstep state AND publish it so the peer re-syncs too.
+    resetLockstep();
+    sendReliable({ type: 'reset' });
   };
 
   GG.sendChat = function (text) {
@@ -1033,20 +1115,24 @@ function endSession(msg, notifyPeer) {
     //    render lag to cover the live RTT+jitter. When we go a long stretch
     //    without a miss, we steal a frame back to keep latency lower on links
     //    that improve. This keeps FPS locked at 60 while minimising lag.
-    var renderFrame = nextFrame - measuredDelay;
+var renderFrame = nextFrame - measuredDelay;
     var peerIn = peerInputs[renderFrame];
     if (!peerIn) {
+      // Peer's input for this frame hasn't arrived yet — HOLD (do not advance)
+      // so both cores stay in deterministic lockstep. True delay-based
+      // prediction that reuses a STALE input would make the two cores compute
+      // DIFFERENT frames and permanently desync, so we must not do that here.
+      // Instead we hold the emulator and let the delay tuner (below) grow the
+      // render lag so the peer input arrives in flight and the hold becomes
+      // rare. lastStep is intentionally NOT updated here so the stall timeout
+      // above still fires if the peer truly vanishes and we degrade gracefully
+      // to single-player.
       delayMisses++;
       delaySamples++;
-      // Peer's input for this frame hasn't arrived yet — HOLD (do not advance)
-      // so we stay frame-locked. lastStep is intentionally NOT updated here,
-      // so the stall timeout above still fires if the peer truly vanishes and
-      // we degrade gracefully to single-player.
       maybeTuneDelay(false);
       return false;
     }
-    // Input arrived in flight — register a clean sample and shrink the buffer
-    // opportunistically when we've been comfy for a while.
+    // Input arrived in flight — register a clean sample.
     delaySamples++;
     maybeTuneDelay(true);
     renderPeer = peerIn;

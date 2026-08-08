@@ -442,7 +442,7 @@ renderDisasm: function () {
     // Reset the console (boot to the reset vector), then apply the assembled
     // routine into memory again so the game starts executing our code at
     // origin (works on carts that boot to $8000).
-    resetApply: function () {
+resetApply: function () {
       if (!this.nes) return;
       var originStr = this.els.asmOrigin.value.trim();
       var origin = 0x8000;
@@ -457,7 +457,17 @@ renderDisasm: function () {
           return;
         }
       }
+      // Reset the jsnes core to its boot state. The vendored jsnes
+      // NES.prototype.reset() zeroes the CPU/PPU/APU but does NOT re-request
+      // the RESET IRQ (only loadROM() does). Without it the CPU stays at
+      // PC=0x7FFF executing garbage and never drives the PPU to VBlank, so the
+      // next frame() hangs forever (gray/black screen). Re-requesting the
+      // RESET IRQ makes the CPU jump to the ROM's reset vector so rendering
+      // resumes normally — the same fix app.js's resetNES() uses.
       this.nes.reset();
+      if (this.nes.cpu && typeof this.nes.cpu.requestIrq === 'function' && this.nes.cpu.IRQ_RESET !== undefined) {
+        this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+      }
       this.assemble(true);
       this.nes.cpu.REG_PC = origin & 0xFFFF;
       this.setAsmStatus('✓ Reset applied — PC set to $' + pad4(origin), 'success');

@@ -22,3 +22,18 @@ version had.
 - [ ] `js/netplay.js`: reset calibration vars in `resetState`.
 - [ ] Verify: `node --check js/netplay.js`.
 - [ ] Verify: run soak test (`server/_run_soak.ps1`) — sustained 120+ frames, no stall.
+
+## Bug fix (Reset in netplay froze on a black screen)
+- [x] `js/netplay.js`: add `GG.reset()` — a netplay-aware reset that resets the
+      local core, re-syncs the lockstep counters to frame 0 via `resetLockstep()`,
+      and sends a `'reset'` message so the peer does the same.
+- [x] `js/netplay.js`: handle the incoming `'reset'` reliable message in
+      `handleReliableMessage` (peer resets its core + lockstep state too).
+- [x] `js/netplay.js`: add `resetLockstep()` so the render/live frame counters,
+      input seed buffers, and adaptive-delay state are all reset together without
+      tearing the session down.
+- [x] `js/app.js`: `resetGame()` now calls `GG.reset()` when a live netplay
+      session is active (instead of a plain `nes.reset()`). A bare `nes.reset()`
+      left the netplay frame counters at their pre-reset (high) values, so
+      `GG.step()` waited for an already-consumed peer input and froze on a black
+      screen.

@@ -549,9 +549,21 @@ netplayDisconnect: $('netplayDisconnect'),
   // The emulator is stepped in fixed 1000/60 ms increments via an accumulator,
   // so gameplay stays at true 60 FPS on any display refresh rate (60/120/144 Hz)
   // and recordings capture exactly 60 unique frames per second.
-  var STEP_MS = 1000 / 60;
+var STEP_MS = 1000 / 60;
   var stepAccumulator = 0;
   var lastStepTime = 0;
+  // Netplay catch-up banking. When a ready netplay session is waiting for the
+  // peer's input for a frame, stepEmulator() returns NETPLAY_HOLD. We do NOT
+  // throw that time slice away — it accumulates so the emulator can render the
+  // missed frames the instant the input arrives, restoring true 60 FPS instead
+  // of dropping one frame per late tick (which otherwise pins the FPS to the
+  // step-success rate, e.g. ~50 FPS at a ~17% late-input rate). The bank is
+  // capped so a long hold (before the adaptive delay converges, or a peer that
+  // is about to be bailed by STALL_TIMEOUT) can never trigger a giant catch-up
+  // burst of stale frames.
+var MAX_NETPLAY_CATCHUP = 8;   // bank at most ~8 frames (~133ms) of catch-up
+  var NETPLAY_HOLD = 'bank';     // stepEmulator() return value: wait for peer input
+  var netplayCatchup = 0;        // banked netplay catch-up credit (frame count)
 
 // The emulator is stepped on a setTimeout scheduler instead of
   // requestAnimationFrame so it keeps running at full speed even when the tab
@@ -568,13 +580,23 @@ netplayDisconnect: $('netplayDisconnect'),
     if (elapsed > 250) elapsed = 250;
     stepAccumulator += elapsed;
 
-    // Never let a single bad frame kill the loop. If stepEmulator() throws
+// Never let a single bad frame kill the loop. If stepEmulator() throws
     // (e.g. a netplay lockstep edge case), we still re-schedule so the game
     // can never freeze on a silent exception.
     try {
       while (stepAccumulator >= STEP_MS) {
-        stepEmulator();
+        // When a ready netplay session is waiting for the peer's input,
+        // stepEmulator() returns NETPLAY_HOLD and we do NOT consume the time
+        // slice — it is banked so the emulator can render the missed frames
+        // the moment the input arrives (restoring true 60 FPS instead of
+        // dropping one frame per late tick). The bank is capped by
+        // MAX_NETPLAY_CATCHUP so a long hold can't trigger a huge burst.
+        if (stepEmulator() === NETPLAY_HOLD) {
+          if (netplayCatchup < MAX_NETPLAY_CATCHUP) netplayCatchup++;
+          break;
+        }
         stepAccumulator -= STEP_MS;
+        if (netplayCatchup > 0) netplayCatchup--; // spend banked credit one tick at a time
       }
     } catch (err) {
       console.error('[nesplayer] stepEmulator error:', err);
@@ -642,7 +664,7 @@ if (!modalOpen && !cheatModalOpen && !debuggerOpen && !netplayModalOpen) {
 if (netplayActive) {
       try {
         netplayFeed();
-        if (!GG.step()) return;   // wait for the opponent's input this frame
+        if (!GG.step()) return NETPLAY_HOLD;   // wait for the opponent's input this frame
         // applyFrame() applies BOTH inputs for the render frame: our own
         // DELAYED input to the local controller (overriding the immediate
         // applyInput() write above) and the peer's input to the other pad.
@@ -1175,9 +1197,35 @@ if (modalOpen) closeBindModal();
     }
   }
 
+// Reset the jsnes core to its boot state. The vendored jsnes NES.prototype.reset()
+  // zeroes the CPU/PPU/APU but does NOT re-request the RESET IRQ — only loadROM()
+  // does that. Without it the CPU stays at PC=0x7FFF executing garbage and never
+  // drives the PPU to VBlank, so the next frame() falls into its infinite
+  // for(;;) loop forever (the console freezes on a black screen). Re-requesting
+  // the RESET IRQ (via the same requestIrq(IRQ_RESET) spy loadROM uses) makes the
+  // CPU jump to the ROM's reset vector and rendering resumes normally.
+  function resetNES() {
+    nes.reset();
+    if (nes.cpu && typeof nes.cpu.requestIrq === 'function' && nes.cpu.IRQ_RESET !== undefined) {
+      nes.cpu.requestIrq(nes.cpu.IRQ_RESET);
+    }
+  }
+
   function resetGame() {
     try {
-      nes.reset();
+      // In a live netplay session, reset BOTH cores in lockstep: GG.reset()
+      // resets the local core, re-syncs the lockstep frame counters to 0, and
+      // tells the peer to do the same so both sides restart from an identical
+      // boot frame. Outside a session this is just a normal console reset.
+      // (GG.reset() itself calls resetNES() internally, so the RESET IRQ fix
+      // applies in both paths.)
+      var GGg = window.NESNetplay;
+      var netplayActive = !!(GGg && GGg.isActive && GGg.isActive() && GGg.isReady && GGg.isReady());
+      if (netplayActive && GGg.reset) {
+        GGg.reset();
+      } else {
+        resetNES();
+      }
       resetRewind();
       captureRewindSnapshot();
       toast('Console reset', 'success');
