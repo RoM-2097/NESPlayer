@@ -80,11 +80,19 @@
   // exchange so the peer's input for a frame has already arrived in flight.
   var INPUT_DELAY = 2;
 
-  var localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
+var localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   var localInputs = {};     // live frame -> {p1:byte, p2:byte}
   var peerInputs = {};      // live frame -> {p1:byte, p2:byte}
   var latestPeer = null;    // most recent peer input (prediction fallback)
   var renderPeer = null;    // peer input to apply on the current render frame
+
+  // ROM transfer is chunked so a ROM payload never exceeds the WebRTC
+  // RTCDataChannel SCTP max-message-size (~256KB). Sending the whole ROM as a
+  // single JSON message silently drops it on the wire, leaving the guest stuck
+  // on "sync ROM" forever. Breaking it into small reliable chunks guarantees
+  // the guest receives every byte.
+  var ROM_CHUNK = 32768;    // 32KB per chunk — well under the ~256KB limit
+  var romReceive = null;    // { name, total, parts, received } while receiving
 
 var STALL_TIMEOUT = 3000;
   var lastStep = 0;
@@ -483,32 +491,71 @@ function wireInput() {
     };
   }
 
-  function handleReliableMessage(raw) {
+function handleReliableMessage(raw) {
     var msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
-    if (msg.type === 'rom') {
-      dbg('rom message received (role=' + role + ')');
+
+    // ---- ROM transfer (chunked) ----
+    // The host splits the ROM into small reliable chunks. We accumulate them
+    // and only boot the guest once EVERY chunk has arrived (see the notes in
+    // maybePeerReady about the RTCDataChannel max-message-size that silently
+    // dropped a single oversized ROM message).
+    if (msg.type === 'rom-chunk') {
       if (role === 'guest' && cfg.guest && cfg.guest.loadRom) {
-        try {
-          cfg.guest.loadRom(msg.bytes, msg.name);
-          sendReliable({ type: 'ready' });
-          dbg('ready sent after loading ROM');
-          setState('syncing');
-          // The guest never receives its own 'ready' message (only the host
-          // does), so it must bootstrap its own lockstep state here or it
-          // will stay unready forever: GG.isReady() remains false, the
-          // emulator holds/never renders, and the guest freezes on a black
-          // screen while the host plays.
-          becomeReady();
-          setState('playing');
-          if (cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
-        } catch (e) {
-          dbg('ROM load failed: ' + (e && e.message));
-          setState('error');
-          toast('ROM load failed: ' + e.message, 'error');
+        // Start a fresh assembly buffer for this transfer.
+        if (!romReceive || romReceive.total !== msg.total ||
+            romReceive.parts !== msg.parts || romReceive.name !== msg.name) {
+          romReceive = {
+            name: msg.name,
+            total: msg.total,
+            parts: msg.parts,
+            received: 0,
+            chunks: {}
+          };
+        }
+        if (romReceive.chunks[msg.index] === undefined) {
+          romReceive.chunks[msg.index] = msg.data;
+          romReceive.received++;
+        }
+        dbg('rom chunk ' + (romReceive.received) + '/' + romReceive.parts);
+        // All chunks present → join them in order and boot the guest.
+        if (romReceive.received === romReceive.parts) {
+          var partsArr = [];
+          for (var i = 0; i < romReceive.parts; i++) {
+            if (romReceive.chunks[i] === undefined) {
+              romReceive = null;
+              setState('error');
+              toast('ROM transfer incomplete', 'error');
+              return;
+            }
+            partsArr.push(romReceive.chunks[i]);
+          }
+          var fullRom = partsArr.join('');
+          romReceive = null;
+          try {
+            cfg.guest.loadRom(fullRom, msg.name);
+            sendReliable({ type: 'ready' });
+            dbg('ready sent after loading ROM (' + fullRom.length + ' bytes)');
+            setState('syncing');
+            // The guest never receives its own 'ready' message (only the host
+            // does), so it must bootstrap its own lockstep state here or it
+            // will stay unready forever: GG.isReady() remains false, the
+            // emulator holds/never renders, and the guest freezes on a black
+            // screen while the host plays.
+            becomeReady();
+            setState('playing');
+            if (cfg.guest && cfg.guest.onStart) cfg.guest.onStart();
+          } catch (e) {
+            dbg('ROM load failed: ' + (e && e.message));
+            setState('error');
+            toast('ROM load failed: ' + e.message, 'error');
+          }
         }
       }
-    } else if (msg.type === 'ready') {
+      return;
+    }
+
+    if (msg.type === 'ready') {
       dbg('ready received');
       becomeReady();
       setState('playing');
@@ -553,12 +600,27 @@ function maybePeerReady() {
             hostNes.running = true;
           }
         } catch (e) { /* ignore */ }
-        dbg('both channels open → sending ROM (' + cfg.host.romBytes.length + ' bytes, name=' + (cfg.host.romName || 'game.nes') + ')');
-        sendReliable({
-          type: 'rom',
-          name: cfg.host.romName || 'game.nes',
-          bytes: cfg.host.romBytes
-        });
+var rom = cfg.host.romBytes;
+        var romName = cfg.host.romName || 'game.nes';
+        dbg('both channels open → sending ROM (' + rom.length + ' bytes, name=' + romName + ')');
+        // Chunk the ROM into small reliable messages. A single oversized JSON
+        // message can exceed the RTCDataChannel SCTP max-message-size (~256KB)
+        // and be silently dropped, so the guest never completes the sync.
+        var total = rom.length;
+        var parts = Math.max(1, Math.ceil(total / ROM_CHUNK));
+        for (var ci = 0; ci < parts; ci++) {
+          var start = ci * ROM_CHUNK;
+          var end = Math.min(start + ROM_CHUNK, total);
+          sendReliable({
+            type: 'rom-chunk',
+            name: romName,
+            total: total,
+            index: ci,
+            parts: parts,
+            data: rom.slice(start, end)
+          });
+        }
+        dbg('ROM sent in ' + parts + ' chunk(s) (' + total + ' bytes)');
       } else if (role === 'host') {
         dbg('both channels open but host has NO romBytes — cannot send ROM');
       } else if (role === 'guest') {
@@ -691,8 +753,9 @@ GG.createRoom = function (url) {
     peerInputs = {};
 latestPeer = null;
     renderPeer = null;
-    pendingIce = [];
+pendingIce = [];
     iceFailTimer = null;
+    romReceive = null;
     localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
   }
 
