@@ -1198,16 +1198,25 @@ if (modalOpen) closeBindModal();
   }
 
 // Reset the jsnes core to its boot state. The vendored jsnes NES.prototype.reset()
-  // zeroes the CPU/PPU/APU but does NOT re-request the RESET IRQ — only loadROM()
-  // does that. Without it the CPU stays at PC=0x7FFF executing garbage and never
-  // drives the PPU to VBlank, so the next frame() falls into its infinite
-  // for(;;) loop forever (the console freezes on a black screen). Re-requesting
-  // the RESET IRQ (via the same requestIrq(IRQ_RESET) spy loadROM uses) makes the
-  // CPU jump to the ROM's reset vector and rendering resumes normally.
+  // zeroes the CPU/PPU/APU but does NOT re-request the RESET IRQ, and for NOT
+  // re-run the mapper's ROM/bank setup — only loadROM() does. A bare reset()
+  // leaves the CPU at PC=0x7FFF executing garbage and never drives the PPU to
+  // VBlank, so the next frame() falls into its infinite for(;;) loop forever
+  // (the console freezes on a gray/black screen). On NROM re-requesting the
+  // RESET IRQ alone is enough, but on mapper ROMs (MMC1/MMC3/etc.) the mapper's
+  // bank state is also lost, so reset()+IRQ still hangs. The reliable fix that
+  // works for EVERY mapper is to re-run the full boot path via reloadROM(),
+  // which re-creates the mapper, re-establishes bank mapping, restores
+  // mirroring, and re-requests the RESET IRQ — exactly the proven loadROM()
+  // sequence the game booted with.
   function resetNES() {
-    nes.reset();
-    if (nes.cpu && typeof nes.cpu.requestIrq === 'function' && nes.cpu.IRQ_RESET !== undefined) {
-      nes.cpu.requestIrq(nes.cpu.IRQ_RESET);
+    if (nes && typeof nes.reloadROM === 'function') {
+      nes.reloadROM();
+    } else if (nes) {
+      nes.reset();
+      if (nes.cpu && typeof nes.cpu.requestIrq === 'function' && nes.cpu.IRQ_RESET !== undefined) {
+        nes.cpu.requestIrq(nes.cpu.IRQ_RESET);
+      }
     }
   }
 

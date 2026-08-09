@@ -804,21 +804,28 @@ var rom = cfg.host.romBytes;
     }
   }
 
-// Reset a jsnes core to its boot state AND re-request the RESET IRQ. The
-  // vendored jsnes NES.prototype.reset() zeroes the CPU/PPU/APU but does NOT
-  // re-request the RESET IRQ — only loadROM() (via the mapper's loadROM()) does
-  // that. Without it the CPU stays at PC=0x7FFF executing garbage and never
-  // drives the PPU to VBlank, so the next frame() falls into its infinite
-  // for(;;) loop forever (gray/black screen freeze). Re-requesting the RESET
-  // IRQ (the same spy loadROM uses) makes the CPU jump to the ROM's reset
-  // vector so rendering resumes normally. Must be used in BOTH netplay reset
-  // paths (GG.reset() and the 'reset' message handler) since netplay calls
-  // nes.reset() directly.
+// Reset a jsnes core to its boot state. The vendored jsnes NES.prototype.reset()
+  // zeroes the CPU/PPU/APU but does NOT re-request the RESET IRQ, and does NOT
+  // re-run the mapper's ROM/bank setup — only loadROM() does. A bare reset()
+  // leaves the CPU at PC=0x7FFF executing garbage and never drives the PPU to
+  // VBlank, so the next frame() falls into its infinite for(;;) loop forever
+  // (gray/black screen freeze). On NROM re-requesting the RESET IRQ alone is
+  // enough, but on mapper ROMs (MMC1/MMC3/etc.) the mapper's bank state is also
+  // lost, so reset()+IRQ still hangs. The reliable fix that works for EVERY
+  // mapper is to re-run the full boot path via reloadROM(), which re-creates
+  // the mapper, re-establishes bank mapping, restores mirroring, and re-requests
+  // the RESET IRQ — exactly the proven loadROM() sequence the game booted with.
+  // Must be used in BOTH netplay reset paths (GG.reset() and the 'reset'
+  // message handler) since netplay calls this directly.
   function resetCore(nesObj) {
     if (!nesObj) return;
-    nesObj.reset();
-    if (nesObj.cpu && typeof nesObj.cpu.requestIrq === 'function' && nesObj.cpu.IRQ_RESET !== undefined) {
-      nesObj.cpu.requestIrq(nesObj.cpu.IRQ_RESET);
+    if (typeof nesObj.reloadROM === 'function') {
+      nesObj.reloadROM();
+    } else {
+      nesObj.reset();
+      if (nesObj.cpu && typeof nesObj.cpu.requestIrq === 'function' && nesObj.cpu.IRQ_RESET !== undefined) {
+        nesObj.cpu.requestIrq(nesObj.cpu.IRQ_RESET);
+      }
     }
   }
 
