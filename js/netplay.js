@@ -88,7 +88,7 @@
 var INPUT_DELAY_MIN = 3;      // minimum render lag (fast LAN) — never below 3
                                 // frames so the peer input is almost always
                                 // already in flight for the render frame.
-  var INPUT_DELAY_MAX = 16;     // maximum render lag (~266ms) before we give up
+var INPUT_DELAY_MAX = 8;      // maximum render lag (~133ms) before we give up
   var INPUT_DELAY = 4;          // starting delay (covers a typical internet RTT)
   var measuredDelay = INPUT_DELAY; // current adaptive render lag in frames
   var delayMisses = 0;          // frames where we HAD to wait for peer input
@@ -925,14 +925,19 @@ latestPeer = null;
     sendReliable({ type: 'ping', seq: seq });
   }
 
-  // One-way latency samples (ms) collected by the probe. Uses the 95th
-  // percentile so occasional spikes don't force an over-large delay, plus one
-  // frame of safety margin. Capped to [INPUT_DELAY_MIN, INPUT_DELAY_MAX].
+// One-way latency samples (ms) collected by the probe. Uses the MEDIAN (the
+  // 50th percentile) instead of the 95th. With only a handful of samples the
+  // 95th picks the WORST sample + 1 frame, which over-inflates the starting
+  // input delay and makes netplay feel unplayably laggy. The median is far more
+  // representative of the typical one-way latency, and the in-play tuner grows
+  // the buffer only if the live miss rate actually demands it. Capped to
+  // [INPUT_DELAY_MIN, INPUT_DELAY_MAX].
   function computeAdaptiveDelay() {
     if (!rttSamples.length) return INPUT_DELAY_MIN;
     var sorted = rttSamples.slice().sort(function (a, b) { return a - b; });
-    var p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
-    var frames = Math.ceil(p95 / 16.67) + 1;
+    var mid = Math.floor(sorted.length / 2);
+    var median = sorted[mid];
+    var frames = Math.max(1, Math.ceil(median / 16.67));
     return Math.max(INPUT_DELAY_MIN, Math.min(INPUT_DELAY_MAX, frames));
   }
 
@@ -1241,7 +1246,7 @@ var renderFrame = nextFrame - measuredDelay;
   // so the tuner NEVER grew the delay and the game stayed permanently stuck at
   // 50 FPS. The pre-match RTT probe now nails the correct starting delay, but
   // this lower hysteresis lets the in-play adapter still correct drift quickly.
-  var DELAY_WINDOW = 30;      // re-tune after this many sampled frames
+var DELAY_WINDOW = 30;      // re-tune after this many sampled frames
   function maybeTuneDelay(clean) {
     if (delaySamples < DELAY_WINDOW) return;
     var missRate = delayMisses / delaySamples;
