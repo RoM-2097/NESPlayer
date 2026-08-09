@@ -126,6 +126,9 @@ var localInput = { p1: new Array(8).fill(0), p2: new Array(8).fill(0) };
 
 var STALL_TIMEOUT = 3000;
   var lastStep = 0;
+  // The last render frame we sent a req-input for. Used to throttle recovery
+  // requests so we don't spam the peer with the same req-input every loop.
+  var lastReqr = -1;
 
   // ICE candidates received before the remote description is set must be
   // buffered and flushed afterwards, otherwise addIceCandidate() throws
@@ -697,6 +700,33 @@ dbg('peer reset — re-syncing lockstep to frame 0');
       resetCore(resetNes);
       resetLockstep();
       return;
+    } else if (msg.type === 'req-input') {
+      // The peer dropped our input packet for `frame` over the unreliable input
+      // channel and is now asking us to re-send it. We look up our OWN buffered
+      // input for that live frame and relay it over the RELIABLE channel so it
+      // is guaranteed to arrive. This is the recovery half of the lost-frame
+      // mechanism — without it a single dropped UDP packet would make the peer
+      // hold forever and eventually trip STALL_TIMEOUT.
+      var reqFrame = msg.frame;
+      var reqInp = localInputs[reqFrame];
+      dbg('peer requested re-send of input frame ' + reqFrame + (reqInp ? '' : ' (not buffered)'));
+      if (reqInp) {
+        sendReliable({ type: 'input-relay', frame: reqFrame, p1: reqInp.p1, p2: reqInp.p2 });
+      }
+      return;
+    } else if (msg.type === 'input-relay') {
+      // The peer answered our req-input by re-sending a lost input frame over
+      // the reliable channel. Store it into peerInputs so the next GG.step()
+      // iteration finds it and advances (instead of holding forever).
+dbg('recv relayed input frame ' + msg.frame);
+      if (typeof msg.frame === 'number') {
+        peerInputs[msg.frame] = { p1: msg.p1 >>> 0, p2: msg.p2 >>> 0 };
+        latestPeer = peerInputs[msg.frame];
+        // Re-arm the recovery throttle so a DIFFERENT lost frame can be
+        // requested if the next one is also dropped.
+        lastReqr = -1;
+      }
+      return;
     } else if (msg.type === 'chat') {
       if (GG.onChat) GG.onChat(msg.from === 'me' ? 'me' : 'peer', msg.text || '');
     }
@@ -791,11 +821,12 @@ var rom = cfg.host.romBytes;
     measuredDelay = INPUT_DELAY;
     delayMisses = 0;
     delaySamples = 0;
-    nextFrame = INPUT_DELAY;
+nextFrame = INPUT_DELAY;
     localInputs = {};
     latestPeer = null;
     renderPeer = null;
     lastStep = Date.now();
+    lastReqr = -1;
 // Seed our own buffered inputs for the delay window AND transmit them so
     // the peer has frames 0..INPUT_DELAY buffered before rendering starts.
     for (var i = 0; i <= nextFrame; i++) {
@@ -849,10 +880,11 @@ var rom = cfg.host.romBytes;
     delaySamples = 0;
     nextFrame = INPUT_DELAY;
     localInputs = {};
-    peerInputs = {};
+peerInputs = {};
     latestPeer = null;
     renderPeer = null;
     lastStep = Date.now();
+    lastReqr = -1;
     // Re-seed and re-transmit the fresh delay window so the peer has frames
     // 0..INPUT_DELAY buffered again before rendering resumes.
     for (var i = 0; i <= nextFrame; i++) {
@@ -1129,11 +1161,22 @@ var renderFrame = nextFrame - measuredDelay;
       // so both cores stay in deterministic lockstep. True delay-based
       // prediction that reuses a STALE input would make the two cores compute
       // DIFFERENT frames and permanently desync, so we must not do that here.
-      // Instead we hold the emulator and let the delay tuner (below) grow the
-      // render lag so the peer input arrives in flight and the hold becomes
-      // rare. lastStep is intentionally NOT updated here so the stall timeout
-      // above still fires if the peer truly vanishes and we degrade gracefully
-      // to single-player.
+      //
+      // RECOVERY: the input channel is unreliable (ordered:false,
+      // maxRetransmits:0), so the packet for this frame may simply have been
+      // dropped in transit. Ask the peer to re-send it over the RELIABLE
+      // channel (throttled to once per frame so we don't spam). The peer's
+      // 'input-relay' reply stores it back into peerInputs, so the next
+      // GG.step() iteration finds it and advances. We also refresh lastStep
+      // while a recovery is in flight so a recoverable packet loss does NOT
+      // trip STALL_TIMEOUT — only a genuinely dead peer (one that never
+      // answers the reliable request) still bails to single-player.
+      if (!(lastReqr === renderFrame)) {
+        lastReqr = renderFrame;
+        sendReliable({ type: 'req-input', frame: renderFrame });
+        dbg('requested lost input frame ' + renderFrame);
+      }
+      lastStep = Date.now();
       delayMisses++;
       delaySamples++;
       maybeTuneDelay(false);
